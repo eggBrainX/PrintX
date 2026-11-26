@@ -25,7 +25,6 @@ data class PaperSize(
         val A6 = PaperSize("A6", "A6", 105f, 148f, "iso_a6_105x148mm")
         val B4 = PaperSize("B4", "B4 (JIS)", 257f, 364f, "jis_b4_257x364mm")
         val B5 = PaperSize("B5", "B5 (JIS)", 182f, 257f, "jis_b5_182x257mm")
-        // F4 Indonesia (215x330 mm) differs from PWG Folio (210x330 mm)
         val F4 = PaperSize("F4", "F4 / Folio ID", 215f, 330f, "custom_f4_215x330mm")
         val LETTER = PaperSize("LETTER", "Letter", 215.9f, 279.4f, "na_letter_8.5x11in")
         val LEGAL = PaperSize("LEGAL", "Legal", 215.9f, 355.6f, "na_legal_8.5x14in")
@@ -76,7 +75,7 @@ enum class Orientation(val label: String, val ippValue: Int) {
 enum class MediaType(val label: String, val ippKeyword: String) {
     PLAIN("Kertas Biasa", "stationery"),
     THICK("Kertas Tebal", "cardstock"),
-    RECYCLED("Daur Ulang", "stationery-recycled"),
+    RECYLED("Daur Ulang", "stationery-recycled"),
     PHOTO("Kertas Foto", "photographic"),
     GLOSSY("Foto Glossy", "photographic-glossy"),
     MATTE("Foto Doff / Matte", "photographic-matte"),
@@ -170,6 +169,15 @@ enum class ImageFilter(val label: String) {
     INVERT("Negatif (Invert)")
 }
 
+enum class CardGridPreset(val label: String, val defaultWidthMm: Float, val defaultHeightMm: Float) {
+    NONE("Normal (Tanpa Grid Kartu)", 0f, 0f),
+    KTP_ID("KTP / Kartu ID (5,5 × 9 cm)", 55f, 90f),
+    PASFOTO_2X3("Pasfoto 2 × 3 cm", 20f, 30f),
+    PASFOTO_3X4("Pasfoto 3 × 4 cm", 30f, 40f),
+    PASFOTO_4X6("Pasfoto 4 × 6 cm", 40f, 60f),
+    CUSTOM_CARD("Ukuran Kartu Kustom (mm)", 55f, 90f)
+}
+
 @JsonClass(generateAdapter = true)
 data class PrintOptions(
     // A. Kertas
@@ -193,7 +201,7 @@ data class PrintOptions(
     val offsetYMm: Float = 0f,
     val rotationDegrees: Int = 0,
     val mirror: Boolean = false,
-    val posterGrid: Int = 1, // 1 = nonaktif, 2 = 2x2, 3 = 3x3
+    val posterGrid: Int = 1,
     val pageRange: String = "",
     val pageRangeFilter: PageRangeFilter = PageRangeFilter.ALL,
     val copies: Int = 1,
@@ -202,6 +210,21 @@ data class PrintOptions(
     val duplex: DuplexMode = DuplexMode.OFF,
     val finishing: Set<FinishingOption> = emptySet(),
     val outputBin: String = "auto",
+    // B2. Grid Kartu / KTP / Pasfoto (Kolom x Baris presisi mm)
+    val cardGridPreset: CardGridPreset = CardGridPreset.NONE,
+    val cardWidthMm: Float = 55f,
+    val cardHeightMm: Float = 90f,
+    val cardColumns: Int = 1,
+    val cardRows: Int = 3,
+    val cardGapMm: Float = 4f,
+    val cardCutMarks: Boolean = true,
+    val cardTwoSidedMode: Boolean = false,
+    // B3. Watermark & Nomor Halaman
+    val watermarkText: String = "",
+    val watermarkOpacity: Float = 0.22f,
+    val watermarkDiagonal: Boolean = true,
+    val showPageNumbers: Boolean = false,
+    val pageNumberPrefix: String = "Hal ",
     // C. Kualitas & warna
     val colorMode: ColorMode = ColorMode.COLOR,
     val quality: PrintQuality = PrintQuality.NORMAL,
@@ -210,14 +233,14 @@ data class PrintOptions(
     val contentOptimize: OptimizeContent = OptimizeContent.AUTO,
     val renderingIntent: RenderingIntent = RenderingIntent.PERCEPTUAL,
     // D. Penyesuaian gambar
-    val brightness: Int = 0,      // -100..100
-    val contrast: Int = 0,        // -100..100
-    val sharpness: Int = 0,       // 0..100
-    val saturation: Int = 0,      // -100..100
-    val gamma: Float = 1.0f,      // 0.5..2.5
-    val warmth: Int = 0,          // -100..100
-    val darkness: Int = 3,        // 1..5
-    val bwThreshold: Int? = null, // null = off, 0..255
+    val brightness: Int = 0,
+    val contrast: Int = 0,
+    val sharpness: Int = 0,
+    val saturation: Int = 0,
+    val gamma: Float = 1.0f,
+    val warmth: Int = 0,
+    val darkness: Int = 3,
+    val bwThreshold: Int? = null,
     val cleanBackground: Boolean = false,
     val darkenText: Boolean = false,
     val autoEnhance: Boolean = false,
@@ -235,6 +258,12 @@ data class PrintOptions(
             else -> listOf(marginType.topMm, marginType.rightMm, marginType.bottomMm, marginType.leftMm)
         }
 
+    val hasCardGrid: Boolean
+        get() = cardGridPreset != CardGridPreset.NONE
+
+    val hasWatermarkOrPageNum: Boolean
+        get() = watermarkText.isNotBlank() || showPageNumbers
+
     val hasImageAdjustments: Boolean
         get() = brightness != 0 ||
             contrast != 0 ||
@@ -248,6 +277,20 @@ data class PrintOptions(
             darkenText ||
             autoEnhance ||
             filter != ImageFilter.NONE
+
+    fun maxCardGridFit(): Pair<Int, Int> {
+        val margins = effectiveMarginsMm
+        val availW = (paperSize.widthMm - margins[1] - margins[3]).coerceAtLeast(20f)
+        val availH = (paperSize.heightMm - margins[0] - margins[2]).coerceAtLeast(20f)
+        val w = if (orientation == Orientation.LANDSCAPE) availH else availW
+        val h = if (orientation == Orientation.LANDSCAPE) availW else availH
+        val gap = cardGapMm.coerceAtLeast(0f)
+        val cw = cardWidthMm.coerceAtLeast(10f)
+        val ch = cardHeightMm.coerceAtLeast(10f)
+        val cols = ((w + gap) / (cw + gap)).toInt().coerceIn(1, 10)
+        val rows = ((h + gap) / (ch + gap)).toInt().coerceIn(1, 15)
+        return cols to rows
+    }
 
     fun resetImageAdjustments(): PrintOptions = copy(
         brightness = 0,

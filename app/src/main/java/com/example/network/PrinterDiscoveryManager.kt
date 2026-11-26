@@ -37,7 +37,8 @@ class PrinterDiscoveryManager(
     private val context: Context,
     private val ippClient: IppClient,
     private val rawAndLprClient: RawAndLprClient,
-    private val companionClient: CompanionClient
+    private val companionClient: CompanionClient,
+    private val esclScannerClient: EsclScannerClient
 ) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -46,6 +47,9 @@ class PrinterDiscoveryManager(
     private val _discoveredPrinters = MutableStateFlow<List<PrinterDevice>>(emptyList())
     val discoveredPrinters: StateFlow<List<PrinterDevice>> = _discoveredPrinters.asStateFlow()
 
+    private val _discoveredScanners = MutableStateFlow<List<EsclScannerInfo>>(emptyList())
+    val discoveredScanners: StateFlow<List<EsclScannerInfo>> = _discoveredScanners.asStateFlow()
+
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
@@ -53,6 +57,7 @@ class PrinterDiscoveryManager(
     val scanMessage: StateFlow<String> = _scanMessage.asStateFlow()
 
     private val foundMap = ConcurrentHashMap<String, PrinterDevice>()
+    private val foundScannersMap = ConcurrentHashMap<String, EsclScannerInfo>()
     private val activeListeners = mutableListOf<NsdManager.DiscoveryListener>()
     private var multicastLock: WifiManager.MulticastLock? = null
     private var scanJob: Job? = null
@@ -74,12 +79,72 @@ class PrinterDiscoveryManager(
         )
     }
 
+    suspend fun probePrinterStatus(printer: PrinterDevice): PrinterDevice {
+        return when (printer.protocol) {
+            PrinterProtocol.IPP, PrinterProtocol.IPPS -> {
+                val res = ippClient.getPrinterAttributes(printer.ippHttpUrl)
+                res.fold(
+                    onSuccess = { caps ->
+                        printer.copy(isOnline = true, capabilities = caps)
+                    },
+                    onFailure = {
+                        val tcpOk = rawAndLprClient.probePort(printer.host, printer.port, 1200)
+                        printer.copy(
+                            isOnline = tcpOk,
+                            capabilities = printer.capabilities.copy(
+                                printerStateMessage = if (tcpOk) "Online (IPP tidak merespons)" else "Offline / Tidak Terjangkau",
+                                lastProbedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                )
+            }
+            PrinterProtocol.COMPANION_HTTP, PrinterProtocol.COMPANION_HTTPS -> {
+                val useHttps = printer.protocol == PrinterProtocol.COMPANION_HTTPS
+                val res = companionClient.fetchPrinters(printer.host, printer.port, useHttps, printer.pairingToken)
+                res.fold(
+                    onSuccess = { list ->
+                        val match = list.firstOrNull { it.companionPrinterName == printer.companionPrinterName }
+                        printer.copy(
+                            isOnline = match != null,
+                            capabilities = (match?.capabilities ?: printer.capabilities).copy(
+                                printerStateMessage = if (match != null) "Online via Laptop" else "Printer USB Dicabut",
+                                lastProbedAt = System.currentTimeMillis()
+                            )
+                        )
+                    },
+                    onFailure = {
+                        printer.copy(
+                            isOnline = false,
+                            capabilities = printer.capabilities.copy(
+                                printerStateMessage = "Companion Laptop Offline",
+                                lastProbedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                )
+            }
+            PrinterProtocol.RAW_9100, PrinterProtocol.LPR_515 -> {
+                val online = rawAndLprClient.probePort(printer.host, printer.port, 1500)
+                printer.copy(
+                    isOnline = online,
+                    capabilities = printer.capabilities.copy(
+                        printerStateMessage = if (online) "Online (Port ${printer.port})" else "Offline / Tidak Terjangkau",
+                        lastProbedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+        }
+    }
+
     fun startDiscovery(scope: CoroutineScope, includeSubnetScan: Boolean = true) {
         stopDiscovery()
         _isScanning.value = true
-        _scanMessage.value = "Mencari printer mDNS (_ipp, _ipps, _pdl-datastream, _lanprint)..."
+        _scanMessage.value = "Mencari printer & scanner mDNS (_ipp, _pdl-datastream, _uscan, _lanprint)..."
         foundMap.clear()
+        foundScannersMap.clear()
         _discoveredPrinters.value = emptyList()
+        _discoveredScanners.value = emptyList()
 
         runCatching {
             multicastLock = wifiManager.createMulticastLock("lanprint_mdns").apply {
@@ -88,7 +153,7 @@ class PrinterDiscoveryManager(
             }
         }
 
-        val serviceTypes = listOf(
+        val printerServices = listOf(
             "_ipp._tcp." to PrinterProtocol.IPP,
             "_ipps._tcp." to PrinterProtocol.IPPS,
             "_printer._tcp." to PrinterProtocol.LPR_515,
@@ -96,9 +161,11 @@ class PrinterDiscoveryManager(
             "_lanprint._tcp." to PrinterProtocol.COMPANION_HTTP
         )
 
-        serviceTypes.forEach { (serviceType, protocol) ->
-            registerMdnsListener(scope, serviceType, protocol)
+        printerServices.forEach { (serviceType, protocol) ->
+            registerMdnsPrinterListener(scope, serviceType, protocol)
         }
+        registerMdnsScannerListener(scope, "_uscan._tcp.", useHttps = false)
+        registerMdnsScannerListener(scope, "_uscans._tcp.", useHttps = true)
 
         scanJob = scope.launch(Dispatchers.IO) {
             if (includeSubnetScan) {
@@ -125,14 +192,14 @@ class PrinterDiscoveryManager(
         }
         multicastLock = null
         _isScanning.value = false
-        if (_discoveredPrinters.value.isEmpty()) {
-            _scanMessage.value = "Selesai memindai. Tambahkan IP manual jika router memblokir mDNS."
+        _scanMessage.value = if (_discoveredPrinters.value.isEmpty() && _discoveredScanners.value.isEmpty()) {
+            "Selesai memindai. Tambahkan IP manual jika router memblokir mDNS."
         } else {
-            _scanMessage.value = "Ditemukan ${_discoveredPrinters.value.size} perangkat cetak."
+            "Ditemukan ${_discoveredPrinters.value.size} printer & ${_discoveredScanners.value.size} scanner."
         }
     }
 
-    private fun registerMdnsListener(
+    private fun registerMdnsPrinterListener(
         scope: CoroutineScope,
         serviceType: String,
         protocol: PrinterProtocol
@@ -140,7 +207,37 @@ class PrinterDiscoveryManager(
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {}
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                resolveServiceCompat(scope, serviceInfo, protocol)
+                resolveServiceCompat(scope, serviceInfo) { name, host, port, txt ->
+                    val rp = txt["rp"]?.let { if (it.startsWith("/")) it else "/$it" } ?: "/ipp/print"
+                    handleResolvedHost(name, host, port, rp, protocol)
+                }
+            }
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+        }
+        activeListeners.add(listener)
+        runCatching {
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
+        }
+    }
+
+    private fun registerMdnsScannerListener(
+        scope: CoroutineScope,
+        serviceType: String,
+        useHttps: Boolean
+    ) {
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(regType: String) {}
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                resolveServiceCompat(scope, serviceInfo) { _, host, port, txt ->
+                    val rs = txt["rs"]?.let { if (it.startsWith("/")) it else "/$it" } ?: "/eSCL"
+                    esclScannerClient.getCapabilities(host, port, useHttps, rs).onSuccess { info ->
+                        foundScannersMap[info.id] = info
+                        _discoveredScanners.value = foundScannersMap.values.sortedBy { it.name }
+                    }
+                }
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
             override fun onDiscoveryStopped(serviceType: String) {}
@@ -157,7 +254,7 @@ class PrinterDiscoveryManager(
     private fun resolveServiceCompat(
         scope: CoroutineScope,
         serviceInfo: NsdServiceInfo,
-        protocol: PrinterProtocol
+        onResolved: suspend (name: String, host: String, port: Int, txt: Map<String, String>) -> Unit
     ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             runCatching {
@@ -169,11 +266,9 @@ class PrinterDiscoveryManager(
                         override fun onServiceUpdated(info: NsdServiceInfo) {
                             val host = info.hostAddresses.firstOrNull { it is Inet4Address }?.hostAddress
                                 ?: info.hostAddresses.firstOrNull()?.hostAddress ?: return
-                            val rpBytes = info.attributes["rp"]
-                            val rp = rpBytes?.let { String(it) }?.let { if (it.startsWith("/")) it else "/$it" }
-                                ?: "/ipp/print"
+                            val txt = info.attributes.mapValues { (_, v) -> v?.let { String(it) }.orEmpty() }
                             scope.launch(Dispatchers.IO) {
-                                handleResolvedHost(info.serviceName, host, info.port, rp, protocol)
+                                onResolved(info.serviceName, host, info.port, txt)
                             }
                             runCatching { nsdManager.unregisterServiceInfoCallback(this) }
                         }
@@ -189,11 +284,9 @@ class PrinterDiscoveryManager(
                     override fun onServiceResolved(resolved: NsdServiceInfo) {
                         val hostObj: InetAddress = resolved.host ?: return
                         val host = hostObj.hostAddress ?: return
-                        val rpBytes = resolved.attributes["rp"]
-                        val rp = rpBytes?.let { String(it) }?.let { if (it.startsWith("/")) it else "/$it" }
-                            ?: "/ipp/print"
+                        val txt = resolved.attributes.mapValues { (_, v) -> v?.let { String(it) }.orEmpty() }
                         scope.launch(Dispatchers.IO) {
-                            handleResolvedHost(resolved.serviceName, host, resolved.port, rp, protocol)
+                            onResolved(resolved.serviceName, host, resolved.port, txt)
                         }
                     }
                 })

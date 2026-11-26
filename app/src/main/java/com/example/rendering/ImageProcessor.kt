@@ -15,6 +15,22 @@ import kotlin.math.roundToInt
 
 object ImageProcessor {
 
+    fun cropBitmap(
+        source: Bitmap,
+        leftFrac: Float,
+        topFrac: Float,
+        rightFrac: Float,
+        bottomFrac: Float
+    ): Bitmap {
+        val l = (leftFrac.coerceIn(0f, 0.9f) * source.width).roundToInt()
+        val t = (topFrac.coerceIn(0f, 0.9f) * source.height).roundToInt()
+        val r = (rightFrac.coerceIn(0.1f, 1f) * source.width).roundToInt()
+        val b = (bottomFrac.coerceIn(0.1f, 1f) * source.height).roundToInt()
+        val w = (r - l).coerceAtLeast(16)
+        val h = (b - t).coerceAtLeast(16)
+        return Bitmap.createBitmap(source, l, t, w.coerceAtMost(source.width - l), h.coerceAtMost(source.height - t))
+    }
+
     fun processBitmap(source: Bitmap, options: PrintOptions, forPreview: Boolean = false): Bitmap {
         var current = applyTransform(source, options.rotationDegrees, options.mirror)
 

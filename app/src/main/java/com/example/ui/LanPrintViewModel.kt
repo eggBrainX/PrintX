@@ -9,14 +9,18 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.LanPrintApplication
 import com.example.domain.model.ActivePrintJob
+import com.example.domain.model.CardGridPreset
 import com.example.domain.model.ContentType
 import com.example.domain.model.PrintHistoryItem
+import com.example.domain.model.PrintJobStatus
 import com.example.domain.model.PrintOptions
 import com.example.domain.model.PrintPreset
 import com.example.domain.model.PrintableDocument
 import com.example.domain.model.PrinterCapabilities
 import com.example.domain.model.PrinterDevice
 import com.example.domain.model.PrinterProtocol
+import com.example.network.EsclScannerInfo
+import com.example.network.ImapEmailSummary
 import com.example.network.NetworkStatus
 import com.example.print.DeviceContentReader
 import com.example.rendering.CalendarEventEntry
@@ -38,6 +42,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Calendar
 import java.util.UUID
 
@@ -56,6 +61,10 @@ object AppRoutes {
     const val CONTACTS_PRINT = "contacts_print"
     const val CALENDAR_PRINT = "calendar_print"
     const val TEXT_EMAIL_PRINT = "text_email_print"
+    const val CAMERA_SCAN = "camera_scan"
+    const val NETWORK_SCANNER = "network_scanner"
+    const val THERMAL_PRINT = "thermal_print"
+    const val IMAP_EMAIL = "imap_email"
 }
 
 class LanPrintViewModel(application: Application) : AndroidViewModel(application) {
@@ -67,6 +76,8 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
     private val ippClient = app.ippClient
     private val rawLprClient = app.rawAndLprClient
     private val companionClient = app.companionClient
+    private val esclClient = app.esclScannerClient
+    private val imapClient = app.imapClient
 
     val savedPrinters: StateFlow<List<PrinterDevice>> = repo.savedPrinters
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -78,12 +89,16 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val discoveredPrinters: StateFlow<List<PrinterDevice>> = discovery.discoveredPrinters
+    val discoveredScanners: StateFlow<List<EsclScannerInfo>> = discovery.discoveredScanners
     val isScanning: StateFlow<Boolean> = discovery.isScanning
     val scanMessage: StateFlow<String> = discovery.scanMessage
     val activeJobs: StateFlow<List<ActivePrintJob>> = dispatcher.activeJobs
 
     private val _networkStatus = MutableStateFlow(discovery.getNetworkStatus())
     val networkStatus: StateFlow<NetworkStatus> = _networkStatus.asStateFlow()
+
+    private val _isRefreshingDashboard = MutableStateFlow(false)
+    val isRefreshingDashboard: StateFlow<Boolean> = _isRefreshingDashboard.asStateFlow()
 
     private val _selectedPrinter = MutableStateFlow<PrinterDevice?>(null)
     val selectedPrinter: StateFlow<PrinterDevice?> = _selectedPrinter.asStateFlow()
@@ -111,6 +126,21 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
 
     private val _calendarEvents = MutableStateFlow<List<CalendarEventEntry>>(emptyList())
     val calendarEvents: StateFlow<List<CalendarEventEntry>> = _calendarEvents.asStateFlow()
+
+    private val _manualScanners = MutableStateFlow<List<EsclScannerInfo>>(emptyList())
+    val manualScanners: StateFlow<List<EsclScannerInfo>> = _manualScanners.asStateFlow()
+
+    private val _isScanningDoc = MutableStateFlow(false)
+    val isScanningDoc: StateFlow<Boolean> = _isScanningDoc.asStateFlow()
+
+    private val _lastScannedFile = MutableStateFlow<File?>(null)
+    val lastScannedFile: StateFlow<File?> = _lastScannedFile.asStateFlow()
+
+    private val _imapEmails = MutableStateFlow<List<ImapEmailSummary>>(emptyList())
+    val imapEmails: StateFlow<List<ImapEmailSummary>> = _imapEmails.asStateFlow()
+
+    private val _isFetchingImap = MutableStateFlow(false)
+    val isFetchingImap: StateFlow<Boolean> = _isFetchingImap.asStateFlow()
 
     private val _pendingNavEvent = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val pendingNavEvent: SharedFlow<String> = _pendingNavEvent.asSharedFlow()
@@ -144,6 +174,22 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
         _networkStatus.value = discovery.getNetworkStatus()
     }
 
+    fun refreshDashboardStatus() {
+        viewModelScope.launch {
+            _isRefreshingDashboard.value = true
+            refreshNetworkStatus()
+            val printers = savedPrinters.value
+            printers.forEach { printer ->
+                val updated = discovery.probePrinterStatus(printer)
+                repo.savePrinter(updated)
+                if (_selectedPrinter.value?.id == updated.id) {
+                    _selectedPrinter.value = updated
+                }
+            }
+            _isRefreshingDashboard.value = false
+        }
+    }
+
     fun startDiscovery(includeSubnetScan: Boolean = true) {
         refreshNetworkStatus()
         discovery.startDiscovery(viewModelScope, includeSubnetScan)
@@ -160,6 +206,12 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
             val savedOpts = repo.getLastOptionsForPrinter(printer.id)
             _currentOptions.value = savedOpts
             schedulePreviewRender()
+            // Probe live ink/paper status in background
+            val probed = discovery.probePrinterStatus(printer)
+            repo.savePrinter(probed)
+            if (_selectedPrinter.value?.id == probed.id) {
+                _selectedPrinter.value = probed
+            }
         }
     }
 
@@ -303,8 +355,28 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun openImagesForPrint(uris: List<Uri>) {
+    fun openImagesForPrint(
+        uris: List<Uri>,
+        presetCardGrid: CardGridPreset? = null,
+        cleanDocumentMode: Boolean = false
+    ) {
         if (uris.isEmpty()) return
+        if (presetCardGrid != null) {
+            _currentOptions.update { opts ->
+                opts.copy(
+                    cardGridPreset = presetCardGrid,
+                    cardWidthMm = presetCardGrid.defaultWidthMm,
+                    cardHeightMm = presetCardGrid.defaultHeightMm,
+                    cardColumns = if (presetCardGrid == CardGridPreset.KTP_ID) 1 else 3,
+                    cardRows = if (presetCardGrid == CardGridPreset.KTP_ID) 3 else 4,
+                    cardTwoSidedMode = uris.size >= 2,
+                    cleanBackground = cleanDocumentMode || opts.cleanBackground,
+                    darkenText = cleanDocumentMode || opts.darkenText
+                )
+            }
+        } else if (cleanDocumentMode) {
+            _currentOptions.update { it.copy(cleanBackground = true, darkenText = true) }
+        }
         val title = if (uris.size == 1) resolveDisplayName(uris.first()) else "${uris.size} Foto"
         val doc = PrintableDocument(
             id = UUID.randomUUID().toString(),
@@ -473,6 +545,95 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
                 estimatedPages = 1
             )
             setDocumentAndNavigate(doc)
+        }
+    }
+
+    fun probeManualEsclScanner(host: String, port: Int, useHttps: Boolean) {
+        viewModelScope.launch {
+            esclClient.getCapabilities(host.trim(), port, useHttps)
+                .onSuccess { info ->
+                    _manualScanners.update { list -> (list.filterNot { it.id == info.id } + info) }
+                    _snackbarMessage.tryEmit("Scanner ${info.name} siap")
+                }
+                .onFailure { err ->
+                    _snackbarMessage.tryEmit("Gagal terhubung ke eSCL scanner: ${err.localizedMessage}")
+                }
+        }
+    }
+
+    fun runNetworkScan(scanner: EsclScannerInfo, dpi: Int, colorMode: String, format: String) {
+        viewModelScope.launch {
+            _isScanningDoc.value = true
+            esclClient.scanDocument(app, scanner, dpi, colorMode, format)
+                .onSuccess { file ->
+                    _lastScannedFile.value = file
+                    _snackbarMessage.tryEmit("Scan selesai: ${file.name}")
+                }
+                .onFailure { err ->
+                    _snackbarMessage.tryEmit("Gagal scan: ${err.localizedMessage}")
+                }
+            _isScanningDoc.value = false
+        }
+    }
+
+    fun openScannedFileForPrint(file: File) {
+        val uri = Uri.fromFile(file)
+        if (file.extension.equals("pdf", ignoreCase = true)) {
+            val doc = PrintableDocument(
+                id = UUID.randomUUID().toString(),
+                title = file.name,
+                contentType = ContentType.PDF,
+                uris = listOf(uri),
+                localPdfPath = file.absolutePath,
+                estimatedPages = 1
+            )
+            setDocumentAndNavigate(doc)
+        } else {
+            openImagesForPrint(listOf(uri), cleanDocumentMode = true)
+        }
+    }
+
+    fun printThermalEscPos(host: String, port: Int, escPosBytes: ByteArray, title: String) {
+        viewModelScope.launch {
+            val tmpFile = withContext(Dispatchers.IO) {
+                File(app.cacheDir, "escpos_${System.currentTimeMillis()}.bin").apply {
+                    FileOutputStream(this).use { it.write(escPosBytes) }
+                }
+            }
+            rawLprClient.sendRaw9100(host.trim(), port, tmpFile) { }
+                .onSuccess {
+                    repo.addHistory(
+                        PrintHistoryItem(
+                            jobTitle = title,
+                            printerName = "Thermal ESC/POS ($host)",
+                            printerEndpoint = "$host:$port (RAW 9100)",
+                            contentType = ContentType.TEXT_EMAIL,
+                            status = PrintJobStatus.DONE,
+                            pageCount = 1,
+                            copies = 1,
+                            optionsSummary = "ESC/POS Thermal"
+                        )
+                    )
+                    _snackbarMessage.tryEmit("Struk/Label berhasil dikirim ke $host:$port")
+                }
+                .onFailure { err ->
+                    _snackbarMessage.tryEmit("Gagal mencetak ke thermal printer: ${err.localizedMessage}")
+                }
+        }
+    }
+
+    fun fetchImapEmails(host: String, port: Int, email: String, appPassword: String) {
+        viewModelScope.launch {
+            _isFetchingImap.value = true
+            imapClient.fetchRecentEmails(host, port, email, appPassword)
+                .onSuccess { list ->
+                    _imapEmails.value = list
+                    if (list.isEmpty()) _snackbarMessage.tryEmit("Kotak masuk kosong")
+                }
+                .onFailure { err ->
+                    _snackbarMessage.tryEmit("Gagal login IMAP: ${err.localizedMessage}")
+                }
+            _isFetchingImap.value = false
         }
     }
 

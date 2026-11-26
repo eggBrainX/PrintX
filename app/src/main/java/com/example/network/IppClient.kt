@@ -95,6 +95,26 @@ class IppClient {
                 .sorted()
                 .ifEmpty { listOf(150, 300, 600) }
 
+            val markerNames = attrs["marker-names"].orEmpty()
+            val markerColors = attrs["marker-colors"].orEmpty()
+            val markerLevels = attrs["marker-levels"].orEmpty().map { it.toIntOrNull() ?: -1 }
+            val markerTypes = attrs["marker-types"].orEmpty()
+            val inkSupplies = markerNames.mapIndexed { idx, mName ->
+                com.example.domain.model.InkSupplyLevel(
+                    name = mName,
+                    colorHex = markerColors.getOrNull(idx) ?: "#0F172A",
+                    levelPercent = markerLevels.getOrNull(idx) ?: -1,
+                    type = markerTypes.getOrNull(idx) ?: "ink"
+                )
+            }
+
+            val readyMedia = attrs["media-ready"].orEmpty()
+                .mapNotNull { PaperSize.fromPwgName(it)?.label ?: it }
+                .distinct()
+
+            val stateReasons = attrs["printer-state-reasons"].orEmpty()
+                .filter { it.isNotBlank() && !it.equals("none", ignoreCase = true) }
+
             PrinterCapabilities(
                 supportsColor = colorSupported,
                 supportsDuplex = supportsDuplex,
@@ -104,9 +124,13 @@ class IppClient {
                 supportedFinishings = finishings,
                 supportedDpis = dpis,
                 supportedOutputBins = outputBins,
+                inkSupplies = inkSupplies,
+                readyMedia = readyMedia,
+                stateReasons = stateReasons,
                 makeAndModel = makeModel,
                 printerStateMessage = stateMsg,
-                attributesProbed = true
+                attributesProbed = true,
+                lastProbedAt = System.currentTimeMillis()
             )
         }
     }
@@ -193,13 +217,18 @@ class IppClient {
             "printer-state-reasons",
             "document-format-supported",
             "media-supported",
+            "media-ready",
             "media-type-supported",
             "media-source-supported",
             "color-supported",
             "sides-supported",
             "finishings-supported",
             "printer-resolution-supported",
-            "output-bin-supported"
+            "output-bin-supported",
+            "marker-names",
+            "marker-colors",
+            "marker-levels",
+            "marker-types"
         )
         requested.forEachIndexed { index, attr ->
             writeAttr(dos, TAG_KEYWORD, if (index == 0) "requested-attributes" else "", attr)

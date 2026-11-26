@@ -1,13 +1,16 @@
 package com.example
 
 import com.example.data.local.JsonConverters
+import com.example.domain.model.CardGridPreset
 import com.example.domain.model.ColorMode
 import com.example.domain.model.DuplexMode
 import com.example.domain.model.FinishingOption
 import com.example.domain.model.ImageFilter
+import com.example.domain.model.MarginType
 import com.example.domain.model.PageRangeFilter
 import com.example.domain.model.PaperSize
 import com.example.domain.model.PrintOptions
+import com.example.rendering.EscPosEncoder
 import com.example.rendering.PdfComposer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -38,7 +41,14 @@ class LanPrintCoreTest {
             sharpness = 40,
             cleanBackground = true,
             bwThreshold = 150,
-            filter = ImageFilter.SHARP_BW
+            filter = ImageFilter.SHARP_BW,
+            cardGridPreset = CardGridPreset.KTP_ID,
+            cardWidthMm = 55f,
+            cardHeightMm = 90f,
+            cardColumns = 2,
+            cardRows = 3,
+            watermarkText = "SALINAN",
+            showPageNumbers = true
         )
         val json = JsonConverters.optionsToJson(original)
         val restored = JsonConverters.optionsFromJson(json)
@@ -63,5 +73,50 @@ class LanPrintCoreTest {
         assertEquals(3 to 3, PdfComposer.nUpGrid(9, isLandscape = false))
         assertEquals(4 to 4, PdfComposer.nUpGrid(16, isLandscape = false))
         assertTrue(PdfComposer.nUpGrid(2, isLandscape = true) == (2 to 1))
+    }
+
+    @Test
+    fun ktpCardGridMaxFitCalculatesExpectedColumnsAndRows() {
+        val a4Default = PrintOptions(
+            paperSize = PaperSize.A4,
+            marginType = MarginType.DEFAULT,
+            cardGridPreset = CardGridPreset.KTP_ID,
+            cardWidthMm = 55f,
+            cardHeightMm = 90f,
+            cardGapMm = 4f
+        )
+        assertEquals(3 to 2, a4Default.maxCardGridFit())
+
+        val a4Narrow = a4Default.copy(marginType = MarginType.NARROW)
+        assertEquals(3 to 3, a4Narrow.maxCardGridFit())
+    }
+
+    @Test
+    fun escPosEncoderProducesValidRasterCommandBytes() {
+        val black = 0xFF000000.toInt()
+        val white = 0xFFFFFFFF.toInt()
+        // 8x1 row: alternating black and white pixels -> 0b10101010 = 0xAA
+        val pixels = intArrayOf(black, white, black, white, black, white, black, white)
+        val encoded = EscPosEncoder.encodePixelsToEscPos(pixels, width = 8, height = 1, cutPaper = true)
+
+        // Starts with ESC @ (0x1B, 0x40) and GS v 0 0 (0x1D, 0x76, 0x30, 0x00)
+        assertEquals(0x1B.toByte(), encoded[0])
+        assertEquals(0x40.toByte(), encoded[1])
+        assertEquals(0x1D.toByte(), encoded[2])
+        assertEquals(0x76.toByte(), encoded[3])
+        assertEquals(0x30.toByte(), encoded[4])
+        assertEquals(0x00.toByte(), encoded[5])
+        // xL=1, xH=0, yL=1, yH=0
+        assertEquals(1.toByte(), encoded[6])
+        assertEquals(0.toByte(), encoded[7])
+        assertEquals(1.toByte(), encoded[8])
+        assertEquals(0.toByte(), encoded[9])
+        // Raster byte = 0xAA
+        assertEquals(0xAA.toByte(), encoded[10])
+        // Ends with partial cut GS V 66 0
+        assertEquals(0x1D.toByte(), encoded[encoded.size - 4])
+        assertEquals(0x56.toByte(), encoded[encoded.size - 3])
+        assertEquals(0x42.toByte(), encoded[encoded.size - 2])
+        assertEquals(0x00.toByte(), encoded[encoded.size - 1])
     }
 }

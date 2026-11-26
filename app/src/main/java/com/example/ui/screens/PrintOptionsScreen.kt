@@ -458,6 +458,52 @@ private fun LivePreviewPane(
                             color = Color(0xFF64748B)
                         )
                     }
+                } else if (previewBitmap != null && options.hasCardGrid) {
+                    // Live Card / KTP (5.5 x 9 cm) / Pasfoto millimeter Grid Preview
+                    val paperWmm = if (isLandscape) options.paperSize.heightMm else options.paperSize.widthMm
+                    val paperHmm = if (isLandscape) options.paperSize.widthMm else options.paperSize.heightMm
+                    val cols = options.cardColumns.coerceIn(1, 10)
+                    val rows = options.cardRows.coerceIn(1, 15)
+                    val cardWFrac = (options.cardWidthMm / paperWmm).coerceIn(0.05f, 0.95f)
+                    val cardHFrac = (options.cardHeightMm / paperHmm).coerceIn(0.05f, 0.95f)
+                    val gapWFrac = (options.cardGapMm / paperWmm).coerceIn(0f, 0.1f)
+                    val gapHFrac = (options.cardGapMm / paperHmm).coerceIn(0f, 0.1f)
+                    val totalWFrac = cols * cardWFrac + (cols - 1) * gapWFrac
+                    val totalHFrac = rows * cardHFrac + (rows - 1) * gapHFrac
+                    val startXFrac = ((1f - totalWFrac) / 2f).coerceAtLeast(0.03f)
+                    val startYFrac = ((1f - totalHFrac) / 2f).coerceAtLeast(0.03f)
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        val imgBmp = previewBitmap.asImageBitmap()
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            for (r in 0 until rows) {
+                                for (c in 0 until cols) {
+                                    val x = (startXFrac + c * (cardWFrac + gapWFrac)) * size.width
+                                    val y = (startYFrac + r * (cardHFrac + gapHFrac)) * size.height
+                                    val w = cardWFrac * size.width
+                                    val h = cardHFrac * size.height
+                                    if (x < size.width && y < size.height) {
+                                        drawImage(
+                                            image = imgBmp,
+                                            dstOffset = androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()),
+                                            dstSize = androidx.compose.ui.unit.IntSize(
+                                                w.toInt().coerceAtLeast(1),
+                                                h.toInt().coerceAtLeast(1)
+                                            )
+                                        )
+                                        if (options.cardCutMarks) {
+                                            drawRect(
+                                                color = Color(0xFF64748B),
+                                                topLeft = Offset(x, y),
+                                                size = androidx.compose.ui.geometry.Size(w, h),
+                                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if (previewBitmap != null) {
                     val contentScale = when (options.scaleType) {
                         ScaleType.FILL -> ContentScale.Crop
@@ -477,6 +523,16 @@ private fun LivePreviewPane(
                             modifier = Modifier.fillMaxSize()
                         )
                     }
+                }
+
+                // Watermark live preview overlay
+                if (options.watermarkText.isNotBlank()) {
+                    Text(
+                        text = options.watermarkText,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFF475569).copy(alpha = options.watermarkOpacity.coerceIn(0.1f, 0.75f)),
+                        modifier = Modifier.padding(8.dp)
+                    )
                 }
 
                 // Margin + N-Up / Poster guide overlay

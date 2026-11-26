@@ -7,19 +7,23 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.RotateRight
-import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.domain.model.CardGridPreset
 import com.example.domain.model.ColorMode
 import com.example.domain.model.DuplexMode
 import com.example.domain.model.FinishingOption
@@ -193,7 +198,198 @@ fun LayoutOptionsPanel(
     capabilities: PrinterCapabilities,
     onUpdate: ((PrintOptions) -> PrintOptions) -> Unit
 ) {
+    val (maxCols, maxRows) = options.maxCardGridFit()
+
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // KTP / Kartu / Pasfoto Grid Section
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (options.hasCardGrid) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                }
+            ),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.GridOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Grid KTP (5,5×9 cm) & Pasfoto", style = MaterialTheme.typography.titleSmall)
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    CardGridPreset.entries.forEach { preset ->
+                        FilterChip(
+                            selected = options.cardGridPreset == preset,
+                            onClick = {
+                                onUpdate {
+                                    if (preset == CardGridPreset.NONE) {
+                                        it.copy(cardGridPreset = preset)
+                                    } else {
+                                        val next = it.copy(
+                                            cardGridPreset = preset,
+                                            cardWidthMm = preset.defaultWidthMm,
+                                            cardHeightMm = preset.defaultHeightMm
+                                        )
+                                        val (fitC, fitR) = next.maxCardGridFit()
+                                        next.copy(
+                                            cardColumns = next.cardColumns.coerceAtMost(fitC),
+                                            cardRows = next.cardRows.coerceAtMost(fitR)
+                                        )
+                                    }
+                                }
+                            },
+                            label = { Text(preset.label) }
+                        )
+                    }
+                }
+
+                if (options.hasCardGrid) {
+                    Text(
+                        text = "Muat maksimal di ${options.paperSize.label}: $maxCols kolom × $maxRows baris (${maxCols * maxRows} kartu). Terpasang: ${options.cardColumns} × ${options.cardRows} = ${options.cardColumns * options.cardRows} kartu/lembar.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    if (options.cardGridPreset == CardGridPreset.CUSTOM_CARD) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = options.cardWidthMm.toString(),
+                                onValueChange = { txt ->
+                                    txt.toFloatOrNull()?.let { v -> onUpdate { it.copy(cardWidthMm = v.coerceIn(10f, 300f)) } }
+                                },
+                                label = { Text("Lebar (mm)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = options.cardHeightMm.toString(),
+                                onValueChange = { txt ->
+                                    txt.toFloatOrNull()?.let { v -> onUpdate { it.copy(cardHeightMm = v.coerceIn(10f, 300f)) } }
+                                },
+                                label = { Text("Tinggi (mm)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // Columns & Rows Steppers
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Jumlah Kolom", style = MaterialTheme.typography.bodyMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { onUpdate { it.copy(cardColumns = (it.cardColumns - 1).coerceAtLeast(1)) } },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("btn_card_col_minus")
+                            ) { Icon(Icons.Default.Remove, contentDescription = "Kurangi kolom") }
+                            Text("${options.cardColumns}", style = MaterialTheme.typography.titleMedium)
+                            IconButton(
+                                onClick = { onUpdate { it.copy(cardColumns = (it.cardColumns + 1).coerceAtMost(10)) } },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("btn_card_col_plus")
+                            ) { Icon(Icons.Default.Add, contentDescription = "Tambah kolom") }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Jumlah Baris", style = MaterialTheme.typography.bodyMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { onUpdate { it.copy(cardRows = (it.cardRows - 1).coerceAtLeast(1)) } },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("btn_card_row_minus")
+                            ) { Icon(Icons.Default.Remove, contentDescription = "Kurangi baris") }
+                            Text("${options.cardRows}", style = MaterialTheme.typography.titleMedium)
+                            IconButton(
+                                onClick = { onUpdate { it.copy(cardRows = (it.cardRows + 1).coerceAtMost(15)) } },
+                                modifier = Modifier.minimumInteractiveComponentSize().testTag("btn_card_row_plus")
+                            ) { Icon(Icons.Default.Add, contentDescription = "Tambah baris") }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { onUpdate { it.copy(cardColumns = 1, cardRows = maxRows) } },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("1 Kolom ($maxRows Baris)") }
+                        OutlinedButton(
+                            onClick = { onUpdate { it.copy(cardColumns = maxCols, cardRows = maxRows) } },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Isi Penuh ($maxCols×$maxRows)") }
+                    }
+
+                    LabeledSlider(
+                        label = "Jarak Antar Kartu",
+                        valueText = "${options.cardGapMm.toInt()} mm",
+                        value = options.cardGapMm,
+                        range = 0f..15f,
+                        onValueChange = { g -> onUpdate { it.copy(cardGapMm = g) } }
+                    )
+
+                    OptionSwitchRow(
+                        title = "Garis Potong (Cut Marks)",
+                        checked = options.cardCutMarks,
+                        onCheckedChange = { c -> onUpdate { it.copy(cardCutMarks = c) } }
+                    )
+                    OptionSwitchRow(
+                        title = "Mode 2 Sisi (Depan & Belakang)",
+                        subtitle = "Jika ada 2 gambar, selang-seling sisi depan & belakang di grid",
+                        checked = options.cardTwoSidedMode,
+                        onCheckedChange = { t -> onUpdate { it.copy(cardTwoSidedMode = t) } }
+                    )
+                }
+            }
+        }
+
+        // Watermark & Page Numbers
+        HorizontalDivider()
+        Text("Watermark & Nomor Halaman", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(
+            value = options.watermarkText,
+            onValueChange = { txt -> onUpdate { it.copy(watermarkText = txt) } },
+            label = { Text("Teks Watermark (mis. SALINAN / RAHASIA)") },
+            placeholder = { Text("Kosongkan jika tanpa watermark") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("input_watermark")
+        )
+        if (options.watermarkText.isNotBlank()) {
+            OptionSwitchRow(
+                title = "Watermark Diagonal (35°)",
+                checked = options.watermarkDiagonal,
+                onCheckedChange = { d -> onUpdate { it.copy(watermarkDiagonal = d) } }
+            )
+            LabeledSlider(
+                label = "Transparansi Watermark",
+                valueText = "${(options.watermarkOpacity * 100).roundToInt()}%",
+                value = options.watermarkOpacity,
+                range = 0.08f..0.75f,
+                onValueChange = { o -> onUpdate { it.copy(watermarkOpacity = o) } }
+            )
+        }
+        OptionSwitchRow(
+            title = "Cetak Nomor Halaman Otomatis (Hal 1 / N)",
+            checked = options.showPageNumbers,
+            onCheckedChange = { p -> onUpdate { it.copy(showPageNumbers = p) } }
+        )
+
+        HorizontalDivider()
+
         // Copies & Collate
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -234,7 +430,6 @@ fun LayoutOptionsPanel(
             onCheckedChange = { r -> onUpdate { it.copy(reverseOrder = r) } }
         )
 
-        // Page range
         OutlinedTextField(
             value = options.pageRange,
             onValueChange = { txt -> onUpdate { it.copy(pageRange = txt) } },
@@ -253,7 +448,6 @@ fun LayoutOptionsPanel(
             }
         }
 
-        // Duplex
         Text(
             text = if (capabilities.supportsDuplex) "Duplex (Dua Sisi)" else "Duplex (Tidak dilaporkan oleh printer)",
             style = MaterialTheme.typography.titleSmall
@@ -269,7 +463,6 @@ fun LayoutOptionsPanel(
             }
         }
 
-        // Scale
         Text("Skala", style = MaterialTheme.typography.titleSmall)
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -293,7 +486,6 @@ fun LayoutOptionsPanel(
             )
         }
 
-        // Margins
         Text("Margin", style = MaterialTheme.typography.titleSmall)
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -309,7 +501,7 @@ fun LayoutOptionsPanel(
         }
         if (options.marginType == MarginType.CUSTOM) {
             LabeledSlider(
-                label = "Margin Kustom (Atas/Bawah/Kiri/Kanan)",
+                label = "Margin Kustom",
                 valueText = "${options.customMarginTopMm.toInt()} mm",
                 value = options.customMarginTopMm,
                 range = 0f..40f,
@@ -326,35 +518,35 @@ fun LayoutOptionsPanel(
             )
         }
 
-        // N-Up (Halaman per lembar)
-        Text("Halaman per Lembar (N-Up)", style = MaterialTheme.typography.titleSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(1, 2, 4, 6, 9, 16).forEach { n ->
-                FilterChip(
-                    selected = options.pagesPerSheet == n,
-                    onClick = { onUpdate { it.copy(pagesPerSheet = n) } },
-                    label = { Text(if (n == 1) "1 (Normal)" else "$n-up") }
-                )
-            }
-        }
-        if (options.pagesPerSheet > 1) {
-            OptionSwitchRow(
-                title = "Garis Tepi Tiap Sel N-Up",
-                checked = options.nUpBorder,
-                onCheckedChange = { b -> onUpdate { it.copy(nUpBorder = b) } }
-            )
+        if (!options.hasCardGrid) {
+            Text("Halaman per Lembar (N-Up)", style = MaterialTheme.typography.titleSmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NUpOrder.entries.forEach { ord ->
+                listOf(1, 2, 4, 6, 9, 16).forEach { n ->
                     FilterChip(
-                        selected = options.nUpOrder == ord,
-                        onClick = { onUpdate { it.copy(nUpOrder = ord) } },
-                        label = { Text(ord.label) }
+                        selected = options.pagesPerSheet == n,
+                        onClick = { onUpdate { it.copy(pagesPerSheet = n) } },
+                        label = { Text(if (n == 1) "1 (Normal)" else "$n-up") }
                     )
+                }
+            }
+            if (options.pagesPerSheet > 1) {
+                OptionSwitchRow(
+                    title = "Garis Tepi Tiap Sel N-Up",
+                    checked = options.nUpBorder,
+                    onCheckedChange = { b -> onUpdate { it.copy(nUpBorder = b) } }
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NUpOrder.entries.forEach { ord ->
+                        FilterChip(
+                            selected = options.nUpOrder == ord,
+                            onClick = { onUpdate { it.copy(nUpOrder = ord) } },
+                            label = { Text(ord.label) }
+                        )
+                    }
                 }
             }
         }
 
-        // Position, Rotation, Mirror, Poster
         Text("Posisi, Putar & Poster", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PagePosition.entries.forEach { pos ->
@@ -379,17 +571,18 @@ fun LayoutOptionsPanel(
             )
         }
 
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(1 to "Poster: Nonaktif", 2 to "Poster 2×2 (4 lembar)", 3 to "Poster 3×3 (9 lembar)").forEach { (g, lbl) ->
-                FilterChip(
-                    selected = options.posterGrid == g,
-                    onClick = { onUpdate { it.copy(posterGrid = g) } },
-                    label = { Text(lbl) }
-                )
+        if (!options.hasCardGrid) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1 to "Poster: Nonaktif", 2 to "Poster 2×2 (4 lembar)", 3 to "Poster 3×3 (9 lembar)").forEach { (g, lbl) ->
+                    FilterChip(
+                        selected = options.posterGrid == g,
+                        onClick = { onUpdate { it.copy(posterGrid = g) } },
+                        label = { Text(lbl) }
+                    )
+                }
             }
         }
 
-        // Finishing
         Text("Finishing (Mesin Fotokopi)", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FinishingOption.entries.forEach { fin ->

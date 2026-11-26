@@ -8,10 +8,12 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.text.TextPaint
 import com.example.domain.model.ContentType
 import com.example.domain.model.NUpOrder
 import com.example.domain.model.Orientation
@@ -24,11 +26,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 object PdfComposer {
 
@@ -76,7 +76,7 @@ object PdfComposer {
             return@withContext rawCopy
         }
 
-        // Fast vector passthrough for PDF when no raster/layout rewrite is needed
+        // Fast vector passthrough for PDF when no raster/layout/watermark rewrite is needed
         val isUnmodifiedPdf = (doc.contentType == ContentType.PDF ||
             doc.contentType == ContentType.WEB_PAGE ||
             doc.contentType == ContentType.CONTACTS ||
@@ -86,6 +86,8 @@ object PdfComposer {
             doc.contentType == ContentType.SYSTEM_PRINT) &&
             targetPrinterIsDirectPdfCapable &&
             !options.applyAdjustmentsToPdf &&
+            !options.hasCardGrid &&
+            !options.hasWatermarkOrPageNum &&
             options.pagesPerSheet == 1 &&
             options.posterGrid == 1 &&
             options.pageRange.isBlank() &&
@@ -107,7 +109,6 @@ object PdfComposer {
             }
         }
 
-        // Compose PDF pages using PdfDocument
         val totalSourcePages = getPageCount(context, doc)
         var selectedIndices = resolvePageIndices(totalSourcePages, options.pageRange, options.pageRangeFilter)
         if (options.reverseOrder) selectedIndices = selectedIndices.reversed()
@@ -122,7 +123,7 @@ object PdfComposer {
         val offsetXPt = mmToPt(options.offsetXMm)
         val offsetYPt = mmToPt(options.offsetYMm)
 
-        val renderDpi = options.dpi.coerceIn(150, 300) // Safe memory cap for mobile PdfDocument
+        val renderDpi = options.dpi.coerceIn(150, 300)
         val maxRenderPx = (renderDpi * 11).coerceIn(1200, 3200)
 
         val nUp = options.pagesPerSheet.coerceIn(1, 16)
@@ -130,8 +131,86 @@ object PdfComposer {
 
         try {
             var sheetIndex = 0
-            if (poster > 1 && nUp == 1) {
-                // Poster tiling mode
+            if (options.hasCardGrid) {
+                // Card / KTP (5.5 x 9 cm) / Pasfoto precision millimeter grid
+                val firstBmp = loadSourcePageBitmap(context, doc, selectedIndices.first(), maxRenderPx)
+                val secondBmp = if (selectedIndices.size > 1) {
+                    loadSourcePageBitmap(context, doc, selectedIndices[1], maxRenderPx)
+                } else null
+
+                val procFirst = firstBmp?.let { ImageProcessor.processBitmap(it, options) }
+                val procSecond = secondBmp?.let { ImageProcessor.processBitmap(it, options) }
+
+                val baseW = options.paperSize.widthPoints
+                val baseH = options.paperSize.heightPoints
+                val isLand = options.orientation == Orientation.LANDSCAPE
+                val pageW = if (isLand) max(baseW, baseH) else min(baseW, baseH)
+                val pageH = if (isLand) min(baseW, baseH) else max(baseW, baseH)
+
+                sheetIndex = 1
+                val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, sheetIndex).create()
+                val page = pdfDoc.startPage(pageInfo)
+                page.canvas.drawColor(Color.WHITE)
+
+                val cols = options.cardColumns.coerceIn(1, 10)
+                val rows = options.cardRows.coerceIn(1, 15)
+                val cardW = mmToPt(options.cardWidthMm.coerceIn(10f, 300f))
+                val cardH = mmToPt(options.cardHeightMm.coerceIn(10f, 300f))
+                val gapPt = mmToPt(options.cardGapMm.coerceIn(0f, 30f))
+
+                val totalGridW = cols * cardW + (cols - 1) * gapPt
+                val totalGridH = rows * cardH + (rows - 1) * gapPt
+                val startX = ((pageW - totalGridW) / 2f).coerceAtLeast(marginLeftPt) + offsetXPt
+                val startY = ((pageH - totalGridH) / 2f).coerceAtLeast(marginTopPt) + offsetYPt
+
+                val cutPaint = Paint().apply {
+                    color = Color.parseColor("#64748B")
+                    strokeWidth = 0.7f
+                    style = Paint.Style.STROKE
+                }
+
+                var slotNum = 0
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        val left = startX + c * (cardW + gapPt)
+                        val top = startY + r * (cardH + gapPt)
+                        val slotRect = RectF(left, top, left + cardW, top + cardH)
+
+                        val bmpToDraw = when {
+                            procSecond != null && options.cardTwoSidedMode ->
+                                if ((c % 2 == 1) || (cols == 1 && r % 2 == 1)) procSecond else procFirst
+                            procSecond != null && selectedIndices.size > 1 ->
+                                if (slotNum % 2 == 1) procSecond else procFirst
+                            else -> procFirst
+                        }
+
+                        if (bmpToDraw != null) {
+                            val dstRect = computeScaledRect(
+                                bmpToDraw.width.toFloat(),
+                                bmpToDraw.height.toFloat(),
+                                slotRect,
+                                ScaleType.FILL,
+                                100,
+                                PagePosition.CENTER
+                            )
+                            page.canvas.save()
+                            page.canvas.clipRect(slotRect)
+                            page.canvas.drawBitmap(bmpToDraw, null, dstRect, Paint(Paint.FILTER_BITMAP_FLAG))
+                            page.canvas.restore()
+                        }
+
+                        if (options.cardCutMarks) {
+                            drawCornerCutMarks(page.canvas, slotRect, cutPaint)
+                        }
+                        slotNum++
+                    }
+                }
+
+                drawOverlayDecorations(page.canvas, pageW, pageH, sheetIndex, 1, options)
+                pdfDoc.finishPage(page)
+                onProgress(0.9f)
+            } else if (poster > 1 && nUp == 1) {
+                val totalSheets = selectedIndices.size * poster * poster
                 selectedIndices.forEachIndexed { idx, srcIdx ->
                     val rawBmp = loadSourcePageBitmap(context, doc, srcIdx, maxRenderPx)
                     if (rawBmp != null) {
@@ -167,6 +246,7 @@ object PdfComposer {
                                     PagePosition.CENTER
                                 )
                                 page.canvas.drawBitmap(processed, srcRect, dstRect, Paint(Paint.FILTER_BITMAP_FLAG))
+                                drawOverlayDecorations(page.canvas, pageW, pageH, sheetIndex, totalSheets, options)
                                 pdfDoc.finishPage(page)
                             }
                         }
@@ -174,7 +254,6 @@ object PdfComposer {
                     onProgress(((idx + 1).toFloat() / selectedIndices.size.toFloat()).coerceIn(0f, 0.9f))
                 }
             } else {
-                // Standard or N-Up composition
                 val chunks = selectedIndices.chunked(nUp)
                 chunks.forEachIndexed { chunkIdx, group ->
                     val firstBmp = loadSourcePageBitmap(context, doc, group.first(), maxRenderPx)
@@ -238,6 +317,7 @@ object PdfComposer {
                             }
                         }
                     }
+                    drawOverlayDecorations(page.canvas, pageW, pageH, sheetIndex, chunks.size, options)
                     pdfDoc.finishPage(page)
                     onProgress(((chunkIdx + 1).toFloat() / chunks.size.toFloat()).coerceIn(0f, 0.9f))
                 }
@@ -251,6 +331,59 @@ object PdfComposer {
         }
 
         outFile
+    }
+
+    private fun drawCornerCutMarks(canvas: Canvas, rect: RectF, paint: Paint) {
+        val len = 8f
+        // Top-left
+        canvas.drawLine(rect.left - 2f, rect.top, rect.left + len, rect.top, paint)
+        canvas.drawLine(rect.left, rect.top - 2f, rect.left, rect.top + len, paint)
+        // Top-right
+        canvas.drawLine(rect.right - len, rect.top, rect.right + 2f, rect.top, paint)
+        canvas.drawLine(rect.right, rect.top - 2f, rect.right, rect.top + len, paint)
+        // Bottom-left
+        canvas.drawLine(rect.left - 2f, rect.bottom, rect.left + len, rect.bottom, paint)
+        canvas.drawLine(rect.left, rect.bottom - len, rect.left, rect.bottom + 2f, paint)
+        // Bottom-right
+        canvas.drawLine(rect.right - len, rect.bottom, rect.right + 2f, rect.bottom, paint)
+        canvas.drawLine(rect.right, rect.bottom - len, rect.right, rect.bottom + 2f, paint)
+    }
+
+    private fun drawOverlayDecorations(
+        canvas: Canvas,
+        pageW: Int,
+        pageH: Int,
+        pageNumber: Int,
+        totalPages: Int,
+        options: PrintOptions
+    ) {
+        if (options.watermarkText.isNotBlank()) {
+            val alpha = (options.watermarkOpacity.coerceIn(0.05f, 0.85f) * 255).roundToInt()
+            val wmPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(alpha, 100, 116, 139)
+                textSize = (min(pageW, pageH) * 0.085f).coerceIn(22f, 64f)
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+                textAlign = Paint.Align.CENTER
+            }
+            canvas.save()
+            canvas.translate(pageW / 2f, pageH / 2f)
+            if (options.watermarkDiagonal) {
+                canvas.rotate(-35f)
+            }
+            canvas.drawText(options.watermarkText.take(40), 0f, wmPaint.textSize / 3f, wmPaint)
+            canvas.restore()
+        }
+
+        if (options.showPageNumbers) {
+            val numPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#334155")
+                textSize = 10.5f
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                textAlign = Paint.Align.CENTER
+            }
+            val label = "${options.pageNumberPrefix}$pageNumber / $totalPages"
+            canvas.drawText(label, pageW / 2f, pageH - 18f, numPaint)
+        }
     }
 
     fun resolvePageIndices(totalPages: Int, rangeExpr: String, filter: PageRangeFilter): List<Int> {
@@ -385,5 +518,5 @@ object PdfComposer {
         }
     }
 
-    private fun mmToPt(mm: Float): Float = mm * 72f / 25.4f
+    fun mmToPt(mm: Float): Float = mm * 72f / 25.4f
 }

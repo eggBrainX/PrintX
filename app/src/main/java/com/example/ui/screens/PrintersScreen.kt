@@ -622,31 +622,27 @@ private fun CompanionPairingDialog(
 @Composable
 private fun CompanionGuideDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val snippet = remember {
-        """
-        # Companion Server (Python FastAPI) untuk Printer USB Laptop
-        # Endpoint yang diharapkan aplikasi LAN Print:
-        #   GET  /api/v1/printers
-        #   POST /api/v1/pair   {"pin": "...", "deviceName": "..."}
-        #   POST /api/v1/jobs   (multipart: printerName, options JSON, file)
-        #   GET  /api/v1/jobs/{id}
-        #   DELETE /api/v1/jobs/{id}
-        # mDNS service: _lanprint._tcp.local. port 8765
-        # Konversi Office: soffice --headless --convert-to pdf <file>
-        # Cetak Windows: SumatraPDF.exe -print-to "<printer>" <pdf>
-        # Cetak Linux/macOS: lp -d "<printer>" <pdf>
-        """.trimIndent()
+    val script = com.example.network.CompanionServerScript.pythonScript
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/x-python")
+    ) { destUri ->
+        if (destUri != null) {
+            context.contentResolver.openOutputStream(destUri)?.use { out ->
+                out.write(script.toByteArray(Charsets.UTF_8))
+            }
+        }
     }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Panduan Companion Server (USB)") },
+        title = { Text("Companion Server Siap Pakai") },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    "Untuk mencetak ke printer USB yang tercolok di laptop atau mengonversi dokumen DOCX/XLSX/PPTX:",
+                    "Simpan atau salin skrip Python FastAPI ini ke laptop (Windows/Linux/macOS) untuk mencetak ke printer USB dan mengonversi DOCX/XLSX/PPTX:",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Surface(
@@ -654,20 +650,27 @@ private fun CompanionGuideDialog(onDismiss: () -> Unit) {
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text(
-                        text = snippet,
+                        text = script.lineSequence().take(24).joinToString("\n") + "\n...",
                         style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
                         modifier = Modifier.padding(10.dp)
                     )
                 }
-                TextButton(
-                    onClick = {
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("Companion Spec", snippet))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("lanprint_companion.py", script))
+                        }
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Salin Skrip")
                     }
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Salin Spesifikasi Endpoint")
+                    TextButton(
+                        onClick = { saveLauncher.launch("lanprint_companion.py") }
+                    ) {
+                        Text("Simpan .py")
+                    }
                 }
             }
         },

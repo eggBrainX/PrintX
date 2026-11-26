@@ -4,8 +4,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,21 +23,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Scanner
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -47,18 +43,13 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -68,35 +59,40 @@ import com.example.domain.model.ActivePrintJob
 import com.example.domain.model.PrintPreset
 import com.example.domain.model.PrinterDevice
 import com.example.network.NetworkStatus
-import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.StatusReadyGreen
+import com.example.ui.components.PrinterDashboardSection
 
 @Composable
 fun PrintHubScreen(
+    savedPrinters: List<PrinterDevice>,
     selectedPrinter: PrinterDevice?,
     networkStatus: NetworkStatus,
+    isRefreshingDashboard: Boolean,
     presets: List<PrintPreset>,
     activeJobs: List<ActivePrintJob>,
+    onRefreshDashboard: () -> Unit,
+    onSelectPrinter: (PrinterDevice) -> Unit,
     onPickImages: (List<Uri>) -> Unit,
     onPickDocument: (Uri) -> Unit,
+    onOpenCameraScan: (ktpMode: Boolean) -> Unit,
+    onOpenNetworkScanner: () -> Unit,
+    onOpenThermalPrint: () -> Unit,
     onOpenWebPrint: () -> Unit,
     onOpenContactsPrint: () -> Unit,
     onOpenCalendarPrint: () -> Unit,
     onOpenTextEmailPrint: () -> Unit,
+    onOpenImapEmail: () -> Unit,
     onPrintTestPage: () -> Unit,
     onApplyPreset: (PrintPreset) -> Unit,
     onNavigateToPrinters: () -> Unit,
     onNavigateToHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Zero-permission Android Photo Picker
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20)
     ) { uris ->
         if (uris.isNotEmpty()) onPickImages(uris)
     }
 
-    // Zero-permission Storage Access Framework for PDF, DOCX, XLSX, PPTX, ODT, TXT, RTF
     val docPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -110,16 +106,20 @@ fun PrintHubScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Active Printer Hero Card
+        // 1. Network Printer Dashboard (Connection Status, Ink/Toner Levels, Paper Levels)
         item {
-            PrinterStatusHeroCard(
+            PrinterDashboardSection(
+                printers = savedPrinters,
                 selectedPrinter = selectedPrinter,
                 networkStatus = networkStatus,
-                onSwitchPrinter = onNavigateToPrinters
+                isRefreshing = isRefreshingDashboard,
+                onRefreshStatus = onRefreshDashboard,
+                onSelectPrinter = onSelectPrinter,
+                onAddOrScanPrinters = onNavigateToPrinters
             )
         }
 
-        // Active Printing Strip (if any)
+        // Active Printing Strip
         if (runningJobs.isNotEmpty()) {
             item {
                 val job = runningJobs.first()
@@ -173,16 +173,15 @@ fun PrintHubScreen(
             }
         }
 
-        // Section: Sumber Konten Cetak
+        // 2. File Picker UI (PDF & Photo Selection to Queue for Printing)
         item {
             Text(
-                text = "Pilih Konten untuk Dicetak",
+                text = "Pilih File & Sumber Cetak",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground
             )
         }
 
-        // Primary 2-column Bento Cards (Photo + PDF/Office)
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -190,11 +189,10 @@ fun PrintHubScreen(
             ) {
                 SourceBentoCard(
                     title = "Foto & Gambar",
-                    subtitle = "JPG, PNG, Multi-foto",
+                    subtitle = "Pilih JPG/PNG dari galeri",
                     icon = Icons.Default.PhotoLibrary,
                     accentColor = MaterialTheme.colorScheme.primary,
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    onContainerColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     testTag = "btn_print_photos",
                     modifier = Modifier.weight(1f),
                     onClick = {
@@ -209,7 +207,6 @@ fun PrintHubScreen(
                     icon = Icons.Default.Description,
                     accentColor = MaterialTheme.colorScheme.secondary,
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    onContainerColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     testTag = "btn_print_documents",
                     modifier = Modifier.weight(1f),
                     onClick = {
@@ -232,7 +229,72 @@ fun PrintHubScreen(
             }
         }
 
-        // Secondary Grid (Web, Contacts, Calendar, Text/Email)
+        // 3. Scan, KTP Grid, Fotokopi & Thermal Suite
+        item {
+            Text(
+                text = "Scan, KTP & Printer Khusus",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CompactActionTile(
+                    title = "Cetak KTP / Pasfoto",
+                    subtitle = "5,5×9 cm • Kolom×Baris",
+                    icon = Icons.Default.Badge,
+                    testTag = "btn_ktp_grid",
+                    modifier = Modifier.weight(1f),
+                    onClick = { onOpenCameraScan(true) }
+                )
+                CompactActionTile(
+                    title = "Scan Kamera",
+                    subtitle = "Foto, Crop & Bersihkan",
+                    icon = Icons.Default.CameraAlt,
+                    testTag = "btn_camera_scan",
+                    modifier = Modifier.weight(1f),
+                    onClick = { onOpenCameraScan(false) }
+                )
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CompactActionTile(
+                    title = "Scanner LAN (eSCL)",
+                    subtitle = "Scan mesin ke HP",
+                    icon = Icons.Default.Scanner,
+                    testTag = "btn_network_scanner",
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenNetworkScanner
+                )
+                CompactActionTile(
+                    title = "Thermal ESC/POS",
+                    subtitle = "Struk & QR 58/80mm",
+                    icon = Icons.Default.ReceiptLong,
+                    testTag = "btn_thermal_print",
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenThermalPrint
+                )
+            }
+        }
+
+        // 4. Web, Email, Contacts, Calendar
+        item {
+            Text(
+                text = "Konten Web & Ponsel",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -246,11 +308,11 @@ fun PrintHubScreen(
                     onClick = onOpenWebPrint
                 )
                 CompactActionTile(
-                    title = "Teks / Email",
-                    icon = Icons.Default.Email,
-                    testTag = "btn_print_text_email",
+                    title = "Email IMAP",
+                    icon = Icons.Default.MailOutline,
+                    testTag = "btn_print_imap",
                     modifier = Modifier.weight(1f),
-                    onClick = onOpenTextEmailPrint
+                    onClick = onOpenImapEmail
                 )
             }
         }
@@ -261,12 +323,27 @@ fun PrintHubScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 CompactActionTile(
+                    title = "Teks / Catatan",
+                    icon = Icons.Default.Email,
+                    testTag = "btn_print_text_email",
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenTextEmailPrint
+                )
+                CompactActionTile(
                     title = "Kontak",
                     icon = Icons.Default.Contacts,
                     testTag = "btn_print_contacts",
                     modifier = Modifier.weight(1f),
                     onClick = onOpenContactsPrint
                 )
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 CompactActionTile(
                     title = "Kalender",
                     icon = Icons.Default.CalendarMonth,
@@ -274,13 +351,13 @@ fun PrintHubScreen(
                     modifier = Modifier.weight(1f),
                     onClick = onOpenCalendarPrint
                 )
+                Spacer(modifier = Modifier.weight(1f))
             }
         }
 
         // Presets Strip
         if (presets.isNotEmpty()) {
             item {
-                Spacer(modifier = Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -340,7 +417,7 @@ fun PrintHubScreen(
             }
         }
 
-        // Quick Test Page & System Print Service tip
+        // Quick Test Page
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -388,183 +465,12 @@ fun PrintHubScreen(
 }
 
 @Composable
-private fun PrinterStatusHeroCard(
-    selectedPrinter: PrinterDevice?,
-    networkStatus: NetworkStatus,
-    onSwitchPrinter: () -> Unit
-) {
-    val primary = MaterialTheme.colorScheme.primary
-    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
-    val surface = MaterialTheme.colorScheme.surface
-
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("hero_printer_card"),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.elevatedCardColors(containerColor = surface),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(
-                            primaryContainer.copy(alpha = 0.45f),
-                            surface
-                        )
-                    )
-                )
-                .padding(18.dp)
-        ) {
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Custom Canvas Wi-Fi + Printer schematic badge
-                    Box(
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(primary.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Canvas(modifier = Modifier.size(34.dp)) {
-                            drawArc(
-                                color = primary,
-                                startAngle = 220f,
-                                sweepAngle = 100f,
-                                useCenter = false,
-                                topLeft = Offset(size.width * 0.12f, 0f),
-                                size = androidx.compose.ui.geometry.Size(size.width * 0.76f, size.height * 0.5f),
-                                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-                            )
-                            drawCircle(
-                                color = if (selectedPrinter != null) StatusReadyGreen else primary,
-                                radius = 3.5.dp.toPx(),
-                                center = Offset(size.width * 0.78f, size.height * 0.55f)
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.Default.Print,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier
-                                .padding(top = 8.dp)
-                                .size(24.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(14.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = selectedPrinter?.name ?: "Belum Ada Printer Dipilih",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = selectedPrinter?.endpointLabel
-                                ?: if (networkStatus.isWifiConnected) {
-                                    "Wi-Fi aktif (${networkStatus.localIp}) — Pindai atau tambah IP"
-                                } else {
-                                    "Hubungkan HP ke Wi-Fi jaringan kantor/rumah"
-                                },
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = if (selectedPrinter != null) JetBrainsMonoFontFamily else MaterialTheme.typography.bodySmall.fontFamily
-                            ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    if (selectedPrinter != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = selectedPrinter.protocol.label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                            if (selectedPrinter.capabilities.supportsDuplex) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = "Duplex",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Wifi,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (networkStatus.isWifiConnected) "Siap Memindai" else "Wi-Fi Terputus",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = onSwitchPrinter,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("btn_choose_printer"),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        Text(if (selectedPrinter == null) "Cari Printer" else "Ganti Printer")
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun SourceBentoCard(
     title: String,
     subtitle: String,
     icon: ImageVector,
     accentColor: Color,
     containerColor: Color,
-    onContainerColor: Color,
     testTag: String,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
@@ -589,15 +495,25 @@ private fun SourceBentoCard(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(containerColor),
+                    .let { m ->
+                        m.padding(0.dp)
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = title,
-                    tint = accentColor,
-                    modifier = Modifier.size(24.dp)
-                )
+                androidx.compose.material3.Surface(
+                    color = containerColor,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = title,
+                            tint = accentColor,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
             }
             Column {
                 Text(
@@ -622,6 +538,7 @@ private fun SourceBentoCard(
 @Composable
 private fun CompactActionTile(
     title: String,
+    subtitle: String? = null,
     icon: ImageVector,
     testTag: String,
     modifier: Modifier = Modifier,
@@ -644,7 +561,7 @@ private fun CompactActionTile(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -654,12 +571,23 @@ private fun CompactActionTile(
                 modifier = Modifier.size(22.dp)
             )
             Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }

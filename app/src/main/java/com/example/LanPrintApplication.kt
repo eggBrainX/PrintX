@@ -4,6 +4,8 @@ import android.app.Application
 import com.example.data.local.LanPrintDatabase
 import com.example.data.repository.LanPrintRepository
 import com.example.network.CompanionClient
+import com.example.network.EsclScannerClient
+import com.example.network.ImapClient
 import com.example.network.IppClient
 import com.example.network.PrinterDiscoveryManager
 import com.example.network.RawAndLprClient
@@ -25,6 +27,10 @@ class LanPrintApplication : Application() {
         private set
     lateinit var companionClient: CompanionClient
         private set
+    lateinit var esclScannerClient: EsclScannerClient
+        private set
+    lateinit var imapClient: ImapClient
+        private set
     lateinit var discoveryManager: PrinterDiscoveryManager
         private set
     lateinit var dispatcher: PrintJobDispatcher
@@ -39,11 +45,14 @@ class LanPrintApplication : Application() {
         ippClient = IppClient()
         rawAndLprClient = RawAndLprClient()
         companionClient = CompanionClient()
+        esclScannerClient = EsclScannerClient()
+        imapClient = ImapClient()
         discoveryManager = PrinterDiscoveryManager(
             context = this,
             ippClient = ippClient,
             rawAndLprClient = rawAndLprClient,
-            companionClient = companionClient
+            companionClient = companionClient,
+            esclScannerClient = esclScannerClient
         )
         dispatcher = PrintJobDispatcher(
             context = this,

@@ -61,12 +61,16 @@ import com.example.ui.AppRoutes
 import com.example.ui.AppTab
 import com.example.ui.LanPrintViewModel
 import com.example.ui.screens.CalendarPrintScreen
+import com.example.ui.screens.CameraScanScreen
 import com.example.ui.screens.ContactsPrintScreen
 import com.example.ui.screens.HistoryScreen
+import com.example.ui.screens.ImapEmailScreen
+import com.example.ui.screens.NetworkScannerScreen
 import com.example.ui.screens.PrintHubScreen
 import com.example.ui.screens.PrintOptionsScreen
 import com.example.ui.screens.PrintersScreen
 import com.example.ui.screens.TextEmailPrintScreen
+import com.example.ui.screens.ThermalPrintScreen
 import com.example.ui.screens.WebPrintScreen
 import com.example.ui.theme.LanPrintTheme
 
@@ -102,8 +106,11 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
 
     val savedPrinters by viewModel.savedPrinters.collectAsStateWithLifecycle()
     val discoveredPrinters by viewModel.discoveredPrinters.collectAsStateWithLifecycle()
+    val discoveredScanners by viewModel.discoveredScanners.collectAsStateWithLifecycle()
+    val manualScanners by viewModel.manualScanners.collectAsStateWithLifecycle()
     val selectedPrinter by viewModel.selectedPrinter.collectAsStateWithLifecycle()
     val networkStatus by viewModel.networkStatus.collectAsStateWithLifecycle()
+    val isRefreshingDashboard by viewModel.isRefreshingDashboard.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val scanMessage by viewModel.scanMessage.collectAsStateWithLifecycle()
     val isProbingManual by viewModel.isProbingManual.collectAsStateWithLifecycle()
@@ -120,6 +127,10 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
 
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
     val calendarEvents by viewModel.calendarEvents.collectAsStateWithLifecycle()
+    val isScanningDoc by viewModel.isScanningDoc.collectAsStateWithLifecycle()
+    val lastScannedFile by viewModel.lastScannedFile.collectAsStateWithLifecycle()
+    val imapEmails by viewModel.imapEmails.collectAsStateWithLifecycle()
+    val isFetchingImap by viewModel.isFetchingImap.collectAsStateWithLifecycle()
 
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -261,16 +272,26 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                     ) {
                         composable(AppRoutes.PRINT_HUB) {
                             PrintHubScreen(
+                                savedPrinters = savedPrinters,
                                 selectedPrinter = selectedPrinter,
                                 networkStatus = networkStatus,
+                                isRefreshingDashboard = isRefreshingDashboard,
                                 presets = presets,
                                 activeJobs = activeJobs,
+                                onRefreshDashboard = { viewModel.refreshDashboardStatus() },
+                                onSelectPrinter = { viewModel.selectPrinter(it) },
                                 onPickImages = { uris -> viewModel.openImagesForPrint(uris) },
                                 onPickDocument = { uri -> viewModel.openDocumentUriForPrint(uri) },
+                                onOpenCameraScan = { ktpMode ->
+                                    navController.navigate("${AppRoutes.CAMERA_SCAN}?ktp=$ktpMode")
+                                },
+                                onOpenNetworkScanner = { navController.navigate(AppRoutes.NETWORK_SCANNER) },
+                                onOpenThermalPrint = { navController.navigate(AppRoutes.THERMAL_PRINT) },
                                 onOpenWebPrint = { navController.navigate(AppRoutes.WEB_PRINT) },
                                 onOpenContactsPrint = { navController.navigate(AppRoutes.CONTACTS_PRINT) },
                                 onOpenCalendarPrint = { navController.navigate(AppRoutes.CALENDAR_PRINT) },
                                 onOpenTextEmailPrint = { navController.navigate(AppRoutes.TEXT_EMAIL_PRINT) },
+                                onOpenImapEmail = { navController.navigate(AppRoutes.IMAP_EMAIL) },
                                 onPrintTestPage = { viewModel.openTestPageForPrint() },
                                 onApplyPreset = { viewModel.applyPreset(it) },
                                 onNavigateToPrinters = {
@@ -299,9 +320,7 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                                 isProbingManual = isProbingManual,
                                 onStartScan = { viewModel.startDiscovery() },
                                 onStopScan = { viewModel.stopDiscovery() },
-                                onSelectPrinter = { printer ->
-                                    viewModel.selectPrinter(printer)
-                                },
+                                onSelectPrinter = { printer -> viewModel.selectPrinter(printer) },
                                 onSetDefaultPrinter = { viewModel.setDefaultPrinter(it) },
                                 onDeletePrinter = { viewModel.deleteSavedPrinter(it) },
                                 onAddManualPrinter = { name, host, port, path, proto, onPin, onDone ->
@@ -341,6 +360,59 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                                 onSavePreset = { viewModel.saveCurrentAsPreset(it) },
                                 onChoosePrinter = { navController.navigate(AppRoutes.PRINTERS) },
                                 onPrintNow = { triggerPrintWithNotifCheck() }
+                            )
+                        }
+
+                        composable(
+                            route = "${AppRoutes.CAMERA_SCAN}?ktp={ktp}",
+                            arguments = listOf(navArgument("ktp") {
+                                type = NavType.BoolType
+                                defaultValue = false
+                            })
+                        ) { backStackEntry ->
+                            val ktpMode = backStackEntry.arguments?.getBoolean("ktp") ?: false
+                            CameraScanScreen(
+                                initialKtpMode = ktpMode,
+                                onBack = { navController.popBackStack() },
+                                onContinueToPrint = { uris, preset, cleanDoc ->
+                                    viewModel.openImagesForPrint(uris, preset, cleanDoc)
+                                }
+                            )
+                        }
+
+                        composable(AppRoutes.NETWORK_SCANNER) {
+                            NetworkScannerScreen(
+                                discoveredScanners = discoveredScanners,
+                                manualScanners = manualScanners,
+                                isScanningDoc = isScanningDoc,
+                                lastScannedFile = lastScannedFile,
+                                onDiscover = { viewModel.startDiscovery(includeSubnetScan = false) },
+                                onProbeManualScanner = { h, p, https -> viewModel.probeManualEsclScanner(h, p, https) },
+                                onRunScan = { sc, dpi, cm, fmt -> viewModel.runNetworkScan(sc, dpi, cm, fmt) },
+                                onOpenScannedForPrint = { f -> viewModel.openScannedFileForPrint(f) },
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable(AppRoutes.THERMAL_PRINT) {
+                            ThermalPrintScreen(
+                                defaultHost = selectedPrinter?.host.orEmpty(),
+                                onPrintThermal = { h, p, bytes, title ->
+                                    viewModel.printThermalEscPos(h, p, bytes, title)
+                                },
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable(AppRoutes.IMAP_EMAIL) {
+                            ImapEmailScreen(
+                                emails = imapEmails,
+                                isFetching = isFetchingImap,
+                                onFetch = { h, p, em, pw -> viewModel.fetchImapEmails(h, p, em, pw) },
+                                onPrintEmail = { subj, body ->
+                                    viewModel.openTextOrEmailForPrint(subj, body, isHtml = false)
+                                },
+                                onBack = { navController.popBackStack() }
                             )
                         }
 

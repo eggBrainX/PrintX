@@ -12,6 +12,14 @@ enum class PrinterProtocol(val label: String, val defaultPort: Int, val isViaLap
 }
 
 @JsonClass(generateAdapter = true)
+data class InkSupplyLevel(
+    val name: String,
+    val colorHex: String,
+    val levelPercent: Int, // 0..100, or -1 if unknown
+    val type: String = "ink"
+)
+
+@JsonClass(generateAdapter = true)
 data class PrinterCapabilities(
     val supportsColor: Boolean = true,
     val supportsDuplex: Boolean = false,
@@ -21,9 +29,13 @@ data class PrinterCapabilities(
     val supportedFinishings: List<String> = emptyList(),
     val supportedDpis: List<Int> = listOf(150, 300, 600),
     val supportedOutputBins: List<String> = listOf("auto"),
+    val inkSupplies: List<InkSupplyLevel> = emptyList(),
+    val readyMedia: List<String> = emptyList(),
+    val stateReasons: List<String> = emptyList(),
     val makeAndModel: String = "",
     val printerStateMessage: String = "Siap",
-    val attributesProbed: Boolean = false
+    val attributesProbed: Boolean = false,
+    val lastProbedAt: Long = 0L
 ) {
     fun supportsPaper(paper: PaperSize): Boolean {
         if (!attributesProbed || supportedPaperIds.isEmpty()) return true

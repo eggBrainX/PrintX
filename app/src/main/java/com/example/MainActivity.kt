@@ -108,6 +108,7 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
     val discoveredPrinters by viewModel.discoveredPrinters.collectAsStateWithLifecycle()
     val discoveredScanners by viewModel.discoveredScanners.collectAsStateWithLifecycle()
     val manualScanners by viewModel.manualScanners.collectAsStateWithLifecycle()
+    val connectedUsbPrinters by viewModel.connectedUsbPrinters.collectAsStateWithLifecycle()
     val selectedPrinter by viewModel.selectedPrinter.collectAsStateWithLifecycle()
     val networkStatus by viewModel.networkStatus.collectAsStateWithLifecycle()
     val isRefreshingDashboard by viewModel.isRefreshingDashboard.collectAsStateWithLifecycle()
@@ -313,6 +314,7 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                             PrintersScreen(
                                 savedPrinters = savedPrinters,
                                 discoveredPrinters = discoveredPrinters,
+                                connectedUsbPrinters = connectedUsbPrinters,
                                 selectedPrinter = selectedPrinter,
                                 networkStatus = networkStatus,
                                 isScanning = isScanning,
@@ -320,14 +322,23 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                                 isProbingManual = isProbingManual,
                                 onStartScan = { viewModel.startDiscovery() },
                                 onStopScan = { viewModel.stopDiscovery() },
+                                onRefreshUsb = { viewModel.refreshUsbPrinters() },
+                                onUseUsbPrinter = { usbInfo -> viewModel.requestUsbPermissionAndSelect(usbInfo) },
                                 onSelectPrinter = { printer -> viewModel.selectPrinter(printer) },
                                 onSetDefaultPrinter = { viewModel.setDefaultPrinter(it) },
                                 onDeletePrinter = { viewModel.deleteSavedPrinter(it) },
-                                onAddManualPrinter = { name, host, port, path, proto, onPin, onDone ->
-                                    viewModel.addAndProbeManualPrinter(name, host, port, path, proto, onPin, onDone)
+                                onAddManualPrinter = { name, host, port, path, proto, smbUser, smbPass, smbDomain, onPin, onSmbAuth, onDone ->
+                                    viewModel.addAndProbeManualPrinter(
+                                        name, host, port, path, proto,
+                                        smbUser, smbPass, smbDomain,
+                                        onPin, onSmbAuth, onDone
+                                    )
                                 },
                                 onPairCompanion = { host, port, https, pin, onPaired ->
                                     viewModel.pairWithCompanion(host, port, https, pin, onPaired)
+                                },
+                                onScanSmbHost = { host, user, pass, domain, onDone ->
+                                    viewModel.discoverSmbPrintersOnHost(host, user, pass, domain, onDone)
                                 }
                             )
                         }

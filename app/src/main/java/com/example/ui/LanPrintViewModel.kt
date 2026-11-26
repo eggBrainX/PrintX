@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
+import android.hardware.usb.UsbManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
@@ -22,11 +23,13 @@ import com.example.domain.model.PrinterProtocol
 import com.example.network.EsclScannerInfo
 import com.example.network.ImapEmailSummary
 import com.example.network.NetworkStatus
+import com.example.network.SmbAuthRequiredException
 import com.example.print.DeviceContentReader
 import com.example.rendering.CalendarEventEntry
 import com.example.rendering.ContactEntry
 import com.example.rendering.DocumentGenerators
 import com.example.rendering.PdfComposer
+import com.example.usb.UsbPrinterInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -78,6 +81,8 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
     private val companionClient = app.companionClient
     private val esclClient = app.esclScannerClient
     private val imapClient = app.imapClient
+    private val smbClient = app.smbPrinterClient
+    private val usbManager = app.usbPrinterManager
 
     val savedPrinters: StateFlow<List<PrinterDevice>> = repo.savedPrinters
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -90,6 +95,7 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
 
     val discoveredPrinters: StateFlow<List<PrinterDevice>> = discovery.discoveredPrinters
     val discoveredScanners: StateFlow<List<EsclScannerInfo>> = discovery.discoveredScanners
+    val connectedUsbPrinters: StateFlow<List<UsbPrinterInfo>> = usbManager.connectedUsbPrinters
     val isScanning: StateFlow<Boolean> = discovery.isScanning
     val scanMessage: StateFlow<String> = discovery.scanMessage
     val activeJobs: StateFlow<List<ActivePrintJob>> = dispatcher.activeJobs
@@ -234,13 +240,71 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun refreshUsbPrinters() {
+        val found = usbManager.refreshConnectedPrinters()
+        if (found.isEmpty()) {
+            _snackbarMessage.tryEmit("Tidak ada printer USB OTG terdeteksi. Pastikan kabel OTG & printer menyala.")
+        } else {
+            _snackbarMessage.tryEmit("${found.size} printer USB OTG terdeteksi")
+        }
+    }
+
+    fun requestUsbPermissionAndSelect(usbInfo: UsbPrinterInfo) {
+        viewModelScope.launch {
+            val granted = usbManager.requestPermission(usbInfo.device)
+            if (granted) {
+                val refreshed = usbManager.refreshConnectedPrinters()
+                    .firstOrNull { it.device.deviceId == usbInfo.device.deviceId } ?: usbInfo
+                val device = refreshed.toPrinterDevice().copy(isSaved = true)
+                repo.savePrinter(device)
+                selectPrinter(device)
+                _snackbarMessage.tryEmit("Printer USB ${device.name} siap digunakan")
+            } else {
+                _snackbarMessage.tryEmit("Izin akses USB ditolak oleh pengguna")
+            }
+        }
+    }
+
+    fun discoverSmbPrintersOnHost(
+        host: String,
+        username: String,
+        password: String,
+        domain: String,
+        onComplete: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _isProbingManual.value = true
+            try {
+                val res = smbClient.discoverPrintersOnHost(host, username, password, domain)
+                res.onSuccess { list ->
+                    if (list.isEmpty()) {
+                        _snackbarMessage.tryEmit("Terhubung ke $host, tapi tidak ada Printer Share yang dibagikan")
+                    } else {
+                        list.forEach { repo.savePrinter(it.copy(isSaved = true)) }
+                        selectPrinter(list.first().copy(isSaved = true))
+                        _snackbarMessage.tryEmit("${list.size} printer Windows SMB dari $host ditambahkan")
+                        onComplete()
+                    }
+                }.onFailure { err ->
+                    _snackbarMessage.tryEmit("Gagal scan SMB $host: ${err.localizedMessage}")
+                }
+            } finally {
+                _isProbingManual.value = false
+            }
+        }
+    }
+
     fun addAndProbeManualPrinter(
         name: String,
         host: String,
         port: Int,
         path: String,
         protocol: PrinterProtocol,
+        smbUsername: String = "",
+        smbPassword: String = "",
+        smbDomain: String = "",
         onRequirePin: (host: String, port: Int, useHttps: Boolean) -> Unit,
+        onRequireSmbAuth: (host: String) -> Unit = {},
         onComplete: () -> Unit
     ) {
         viewModelScope.launch {
@@ -248,6 +312,77 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
             val cleanHost = host.trim()
             try {
                 when (protocol) {
+                    PrinterProtocol.SMB_WINDOWS -> {
+                        val cleanShare = path.trim().trimStart('/')
+                        if (cleanShare.isBlank()) {
+                            val res = smbClient.discoverPrintersOnHost(
+                                cleanHost,
+                                smbUsername.ifBlank { null },
+                                smbPassword.ifBlank { null },
+                                smbDomain.ifBlank { null }
+                            )
+                            res.onSuccess { list ->
+                                if (list.isEmpty()) {
+                                    _snackbarMessage.tryEmit("Tidak ditemukan Printer Share di $cleanHost. Masukkan Nama Share secara manual.")
+                                } else {
+                                    list.forEach { repo.savePrinter(it.copy(isSaved = true)) }
+                                    selectPrinter(list.first().copy(isSaved = true))
+                                    _snackbarMessage.tryEmit("${list.size} printer Windows SMB ditambahkan")
+                                    onComplete()
+                                }
+                            }.onFailure { err ->
+                                if (err is SmbAuthRequiredException) {
+                                    onRequireSmbAuth(cleanHost)
+                                } else {
+                                    _snackbarMessage.tryEmit("Gagal menjangkau SMB $cleanHost: ${err.localizedMessage}")
+                                }
+                            }
+                        } else {
+                            val device = PrinterDevice(
+                                id = "SMB_${cleanHost}_$cleanShare",
+                                name = name.ifBlank { "$cleanShare (Windows)" },
+                                host = cleanHost,
+                                port = 445,
+                                path = "/$cleanShare",
+                                protocol = PrinterProtocol.SMB_WINDOWS,
+                                smbShareName = cleanShare,
+                                smbUsername = smbUsername.ifBlank { null },
+                                smbPassword = smbPassword.ifBlank { null },
+                                smbDomain = smbDomain.ifBlank { null },
+                                capabilities = PrinterCapabilities(
+                                    makeAndModel = "Windows Shared Printer @ $cleanHost",
+                                    printerStateMessage = "Siap via SMB Windows",
+                                    attributesProbed = true
+                                ),
+                                isSaved = true
+                            )
+                            val online = smbClient.checkShareOnline(device)
+                            val finalDevice = device.copy(
+                                isOnline = online,
+                                capabilities = device.capabilities.copy(
+                                    printerStateMessage = if (online) "Share Windows Online" else "Disimpan (Share Belum Terjangkau)"
+                                )
+                            )
+                            repo.savePrinter(finalDevice)
+                            selectPrinter(finalDevice)
+                            _snackbarMessage.tryEmit(
+                                if (online) "Printer Windows ${finalDevice.name} aktif & disimpan"
+                                else "Disimpan — pastikan Printer Sharing di Windows aktif"
+                            )
+                            onComplete()
+                        }
+                    }
+
+                    PrinterProtocol.USB_OTG -> {
+                        val found = usbManager.refreshConnectedPrinters()
+                        if (found.isEmpty()) {
+                            _snackbarMessage.tryEmit("Belum ada printer USB OTG terhubung")
+                        } else {
+                            requestUsbPermissionAndSelect(found.first())
+                            onComplete()
+                        }
+                    }
+
                     PrinterProtocol.COMPANION_HTTP, PrinterProtocol.COMPANION_HTTPS -> {
                         val useHttps = protocol == PrinterProtocol.COMPANION_HTTPS
                         val res = companionClient.fetchPrinters(cleanHost, port, useHttps)
@@ -672,6 +807,10 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
             }
             Intent.ACTION_VIEW -> {
                 intent.data?.let { openDocumentUriForPrint(it) }
+            }
+            UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                usbManager.refreshConnectedPrinters()
+                _pendingNavEvent.tryEmit(AppRoutes.PRINTERS)
             }
         }
     }

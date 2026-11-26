@@ -27,6 +27,7 @@
 
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
         android:name=".LanPrintApplication"
@@ -79,6 +80,14 @@
                 <data android:mimeType="application/pdf" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+
+            <!-- Deteksi otomatis printer USB OTG saat dicolokkan -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
         </activity>
 
         <!-- Layanan Cetak Sistem Android (muncul di menu Cetak semua aplikasi) -->

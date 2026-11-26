@@ -9,7 +9,9 @@ import com.example.network.ImapClient
 import com.example.network.IppClient
 import com.example.network.PrinterDiscoveryManager
 import com.example.network.RawAndLprClient
+import com.example.network.SmbPrinterClient
 import com.example.print.PrintJobDispatcher
+import com.example.usb.UsbPrinterManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +33,10 @@ class LanPrintApplication : Application() {
         private set
     lateinit var imapClient: ImapClient
         private set
+    lateinit var smbPrinterClient: SmbPrinterClient
+        private set
+    lateinit var usbPrinterManager: UsbPrinterManager
+        private set
     lateinit var discoveryManager: PrinterDiscoveryManager
         private set
     lateinit var dispatcher: PrintJobDispatcher
@@ -47,19 +53,25 @@ class LanPrintApplication : Application() {
         companionClient = CompanionClient()
         esclScannerClient = EsclScannerClient()
         imapClient = ImapClient()
+        smbPrinterClient = SmbPrinterClient()
+        usbPrinterManager = UsbPrinterManager(this)
         discoveryManager = PrinterDiscoveryManager(
             context = this,
             ippClient = ippClient,
             rawAndLprClient = rawAndLprClient,
             companionClient = companionClient,
-            esclScannerClient = esclScannerClient
+            esclScannerClient = esclScannerClient,
+            smbPrinterClient = smbPrinterClient,
+            usbPrinterManager = usbPrinterManager
         )
         dispatcher = PrintJobDispatcher(
             context = this,
             repository = repository,
             ippClient = ippClient,
             rawAndLprClient = rawAndLprClient,
-            companionClient = companionClient
+            companionClient = companionClient,
+            smbPrinterClient = smbPrinterClient,
+            usbPrinterManager = usbPrinterManager
         )
 
         appScope.launch {

@@ -7,6 +7,8 @@ enum class PrinterProtocol(val label: String, val defaultPort: Int, val isViaLap
     IPPS("IPPS (TLS)", 631, false),
     RAW_9100("RAW 9100", 9100, false),
     LPR_515("LPR / LPD", 515, false),
+    SMB_WINDOWS("Windows SMB Share", 445, false),
+    USB_OTG("USB OTG Langsung", 0, false),
     COMPANION_HTTP("USB via Laptop (HTTP)", 8765, true),
     COMPANION_HTTPS("USB via Laptop (HTTPS)", 8765, true)
 }
@@ -54,6 +56,13 @@ data class PrinterDevice(
     val companionPrinterName: String? = null,
     val pairingToken: String? = null,
     val tlsCertFingerprint: String? = null,
+    val smbShareName: String? = null,
+    val smbUsername: String? = null,
+    val smbPassword: String? = null,
+    val smbDomain: String? = null,
+    val usbDeviceName: String? = null,
+    val usbVendorId: Int? = null,
+    val usbProductId: Int? = null,
     val capabilities: PrinterCapabilities = PrinterCapabilities(),
     val isSaved: Boolean = false,
     val isDefault: Boolean = false,
@@ -66,6 +75,10 @@ data class PrinterDevice(
                 "${companionPrinterName ?: name} @ $host:$port"
             PrinterProtocol.IPP, PrinterProtocol.IPPS ->
                 "${protocol.name.lowercase()}://$host:$port$path"
+            PrinterProtocol.SMB_WINDOWS ->
+                "smb://$host/${smbShareName ?: path.trimStart('/')}"
+            PrinterProtocol.USB_OTG ->
+                "USB OTG (${usbDeviceName ?: host})"
             else -> "$host:$port (${protocol.label})"
         }
 

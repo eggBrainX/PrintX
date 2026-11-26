@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.CardDefaults
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.InkSupplyLevel
 import com.example.domain.model.PrinterDevice
+import com.example.domain.model.PrinterProtocol
 import com.example.network.NetworkStatus
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.StatusErrorRed
@@ -221,7 +223,11 @@ private fun ActivePrinterTelemetryCard(printer: PrinterDevice) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = if (printer.protocol.isViaLaptop) Icons.Default.Computer else Icons.Default.Print,
+                    imageVector = when {
+                        printer.protocol == PrinterProtocol.USB_OTG -> Icons.Default.Usb
+                        printer.protocol.isViaLaptop || printer.protocol == PrinterProtocol.SMB_WINDOWS -> Icons.Default.Computer
+                        else -> Icons.Default.Print
+                    },
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(26.dp)

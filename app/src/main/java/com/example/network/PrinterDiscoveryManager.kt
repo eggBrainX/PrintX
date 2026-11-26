@@ -10,6 +10,7 @@ import android.os.Build
 import com.example.domain.model.PrinterCapabilities
 import com.example.domain.model.PrinterDevice
 import com.example.domain.model.PrinterProtocol
+import com.example.usb.UsbPrinterManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,7 +39,9 @@ class PrinterDiscoveryManager(
     private val ippClient: IppClient,
     private val rawAndLprClient: RawAndLprClient,
     private val companionClient: CompanionClient,
-    private val esclScannerClient: EsclScannerClient
+    private val esclScannerClient: EsclScannerClient,
+    private val smbPrinterClient: SmbPrinterClient,
+    private val usbPrinterManager: UsbPrinterManager
 ) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -134,17 +137,49 @@ class PrinterDiscoveryManager(
                     )
                 )
             }
+            PrinterProtocol.SMB_WINDOWS -> {
+                val online = rawAndLprClient.probePort(printer.host, 445, 1500) &&
+                    smbPrinterClient.checkShareOnline(printer)
+                printer.copy(
+                    isOnline = online,
+                    capabilities = printer.capabilities.copy(
+                        printerStateMessage = if (online) "Share Windows Online" else "Share Windows Offline",
+                        lastProbedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            PrinterProtocol.USB_OTG -> {
+                val usbInfo = usbPrinterManager.findMatchingUsbPrinter(printer)
+                val online = usbInfo != null
+                val stateMsg = if (usbInfo != null) {
+                    usbPrinterManager.readPortStatusLabel(usbInfo)
+                } else {
+                    "Kabel USB OTG Terputus"
+                }
+                printer.copy(
+                    isOnline = online,
+                    capabilities = printer.capabilities.copy(
+                        printerStateMessage = stateMsg,
+                        lastProbedAt = System.currentTimeMillis()
+                    )
+                )
+            }
         }
     }
 
     fun startDiscovery(scope: CoroutineScope, includeSubnetScan: Boolean = true) {
         stopDiscovery()
         _isScanning.value = true
-        _scanMessage.value = "Mencari printer & scanner mDNS (_ipp, _pdl-datastream, _uscan, _lanprint)..."
+        _scanMessage.value = "Mencari printer mDNS, Windows SMB Share, & USB OTG..."
         foundMap.clear()
         foundScannersMap.clear()
         _discoveredPrinters.value = emptyList()
         _discoveredScanners.value = emptyList()
+
+        // Also detect connected USB OTG printers immediately
+        usbPrinterManager.refreshConnectedPrinters().forEach { usbInfo ->
+            addDiscovered(usbInfo.toPrinterDevice())
+        }
 
         runCatching {
             multicastLock = wifiManager.createMulticastLock("lanprint_mdns").apply {
@@ -158,6 +193,7 @@ class PrinterDiscoveryManager(
             "_ipps._tcp." to PrinterProtocol.IPPS,
             "_printer._tcp." to PrinterProtocol.LPR_515,
             "_pdl-datastream._tcp." to PrinterProtocol.RAW_9100,
+            "_smb._tcp." to PrinterProtocol.SMB_WINDOWS,
             "_lanprint._tcp." to PrinterProtocol.COMPANION_HTTP
         )
 
@@ -171,7 +207,7 @@ class PrinterDiscoveryManager(
             if (includeSubnetScan) {
                 val status = getNetworkStatus()
                 if (status.subnetPrefix != null) {
-                    _scanMessage.value = "Memindai mDNS & subnet ${status.subnetPrefix}.1-254 (port 631, 9100, 8765)..."
+                    _scanMessage.value = "Memindai mDNS & subnet ${status.subnetPrefix}.1-254 (IPP 631, RAW 9100, LPR 515, SMB 445, Companion 8765)..."
                     scanSubnetPorts(status.subnetPrefix, status.localIp)
                 }
             }
@@ -304,6 +340,11 @@ class PrinterDiscoveryManager(
                         handleResolvedHost("Printer IPP ($ip)", ip, 631, "/ipp/print", PrinterProtocol.IPP)
                     } else if (rawAndLprClient.probePort(ip, 9100, 400)) {
                         handleResolvedHost("Printer RAW ($ip)", ip, 9100, "", PrinterProtocol.RAW_9100)
+                    } else if (rawAndLprClient.probePort(ip, 515, 350)) {
+                        handleResolvedHost("Printer LPR ($ip)", ip, 515, "lp", PrinterProtocol.LPR_515)
+                    }
+                    if (rawAndLprClient.probePort(ip, 445, 420)) {
+                        handleResolvedHost("Windows SMB ($ip)", ip, 445, "", PrinterProtocol.SMB_WINDOWS)
                     }
                     if (rawAndLprClient.probePort(ip, 8765, 400)) {
                         handleResolvedHost("Laptop Companion ($ip)", ip, 8765, "/api/v1/jobs", PrinterProtocol.COMPANION_HTTP)
@@ -320,6 +361,31 @@ class PrinterDiscoveryManager(
         path: String,
         protocol: PrinterProtocol
     ) {
+        if (protocol == PrinterProtocol.SMB_WINDOWS) {
+            val smbRes = smbPrinterClient.discoverPrintersOnHost(host)
+            smbRes.onSuccess { sharedPrinters ->
+                sharedPrinters.forEach { addDiscovered(it) }
+            }.onFailure { err ->
+                if (err is SmbAuthRequiredException) {
+                    addDiscovered(
+                        PrinterDevice(
+                            id = "smb_auth_$host",
+                            name = "$serviceName (Butuh Login Windows)",
+                            host = host,
+                            port = 445,
+                            path = "",
+                            protocol = PrinterProtocol.SMB_WINDOWS,
+                            capabilities = PrinterCapabilities(
+                                makeAndModel = "Windows Printer Sharing @ $host",
+                                printerStateMessage = "Ketuk untuk masukkan Username/Password Windows"
+                            )
+                        )
+                    )
+                }
+            }
+            return
+        }
+
         if (protocol == PrinterProtocol.COMPANION_HTTP || protocol == PrinterProtocol.COMPANION_HTTPS) {
             val result = companionClient.fetchPrinters(
                 host = host,

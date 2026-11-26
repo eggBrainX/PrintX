@@ -119,4 +119,31 @@ class LanPrintCoreTest {
         assertEquals(0x42.toByte(), encoded[encoded.size - 2])
         assertEquals(0x00.toByte(), encoded[encoded.size - 1])
     }
+
+    @Test
+    fun smbAndUsbPrinterEndpointsAreFormattedProperly() {
+        val smbPrinter = com.example.domain.model.PrinterDevice(
+            id = "SMB_192.168.1.50_CanonG2010",
+            name = "Canon G2010 (Windows)",
+            host = "192.168.1.50",
+            port = 445,
+            path = "/CanonG2010",
+            protocol = com.example.domain.model.PrinterProtocol.SMB_WINDOWS,
+            smbShareName = "CanonG2010"
+        )
+        assertEquals("smb://192.168.1.50/CanonG2010", smbPrinter.endpointLabel)
+
+        val usbPrinter = com.example.domain.model.PrinterDevice(
+            id = "USB_1193_6146_1",
+            name = "Canon PIXMA USB",
+            host = "/dev/bus/usb/001/002",
+            port = 0,
+            path = "",
+            protocol = com.example.domain.model.PrinterProtocol.USB_OTG,
+            usbDeviceName = "/dev/bus/usb/001/002",
+            usbVendorId = 1193,
+            usbProductId = 6146
+        )
+        assertEquals("USB OTG (/dev/bus/usb/001/002)", usbPrinter.endpointLabel)
+    }
 }

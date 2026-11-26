@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import com.example.R
 import com.example.data.repository.LanPrintRepository
 import com.example.domain.model.ActivePrintJob
+import com.example.domain.model.ColorMode
 import com.example.domain.model.ContentType
 import com.example.domain.model.PrintHistoryItem
 import com.example.domain.model.PrintJobStatus
@@ -19,7 +20,10 @@ import com.example.domain.model.PrinterProtocol
 import com.example.network.CompanionClient
 import com.example.network.IppClient
 import com.example.network.RawAndLprClient
+import com.example.network.SmbPrinterClient
 import com.example.rendering.PdfComposer
+import com.example.rendering.PrinterPayloadFormatter
+import com.example.usb.UsbPrinterManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +43,9 @@ class PrintJobDispatcher(
     private val repository: LanPrintRepository,
     val ippClient: IppClient,
     val rawAndLprClient: RawAndLprClient,
-    val companionClient: CompanionClient
+    val companionClient: CompanionClient,
+    val smbPrinterClient: SmbPrinterClient,
+    val usbPrinterManager: UsbPrinterManager
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val runningJobs = ConcurrentHashMap<String, Job>()
@@ -218,6 +224,69 @@ class PrintJobDispatcher(
                             pageCount = totalPages,
                             options = options,
                             detail = "Terkirim via LPR Port ${printer.port}"
+                        )
+                    }
+
+                    PrinterProtocol.SMB_WINDOWS -> {
+                        val payload = PrinterPayloadFormatter.preparePayloadForRawOrDriver(
+                            context = context,
+                            pdfFile = generatedFile,
+                            supportedCommands = printer.capabilities.supportedMimeTypes,
+                            isColor = options.colorMode != ColorMode.MONOCHROME
+                        )
+                        smbPrinterClient.sendPrintJob(
+                            printer = printer,
+                            file = payload,
+                            copies = options.copies,
+                            onProgress = { p ->
+                                updateJob(localId) {
+                                    it.copy(
+                                        progress = 0.55f + p * 0.42f,
+                                        statusDetail = "Mengirim ke Windows Share (${printer.smbShareName ?: printer.name})..."
+                                    )
+                                }
+                            }
+                        ).getOrThrow()
+                        finishJobSuccess(
+                            localId = localId,
+                            remoteJobId = null,
+                            document = document,
+                            printer = printer,
+                            pageCount = totalPages,
+                            options = options,
+                            detail = "Terkirim ke Windows SMB (${printer.smbShareName ?: printer.host})"
+                        )
+                    }
+
+                    PrinterProtocol.USB_OTG -> {
+                        val usbInfo = usbPrinterManager.findMatchingUsbPrinter(printer)
+                        val payload = PrinterPayloadFormatter.preparePayloadForRawOrDriver(
+                            context = context,
+                            pdfFile = generatedFile,
+                            supportedCommands = usbInfo?.commandSets.orEmpty(),
+                            isColor = options.colorMode != ColorMode.MONOCHROME
+                        )
+                        usbPrinterManager.sendPrintJob(
+                            printer = printer,
+                            file = payload,
+                            copies = options.copies,
+                            onProgress = { p ->
+                                updateJob(localId) {
+                                    it.copy(
+                                        progress = 0.55f + p * 0.42f,
+                                        statusDetail = "Mengirim via USB OTG ke ${printer.name}..."
+                                    )
+                                }
+                            }
+                        ).getOrThrow()
+                        finishJobSuccess(
+                            localId = localId,
+                            remoteJobId = null,
+                            document = document,
+                            printer = printer,
+                            pageCount = totalPages,
+                            options = options,
+                            detail = "Terkirim via USB OTG Langsung"
                         )
                     }
                 }

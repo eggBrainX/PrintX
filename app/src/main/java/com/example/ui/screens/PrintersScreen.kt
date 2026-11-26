@@ -11,6 +11,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,8 +37,10 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -44,6 +48,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,6 +70,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -73,11 +79,13 @@ import com.example.domain.model.PrinterProtocol
 import com.example.network.NetworkStatus
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.StatusReadyGreen
+import com.example.usb.UsbPrinterInfo
 
 @Composable
 fun PrintersScreen(
     savedPrinters: List<PrinterDevice>,
     discoveredPrinters: List<PrinterDevice>,
+    connectedUsbPrinters: List<UsbPrinterInfo>,
     selectedPrinter: PrinterDevice?,
     networkStatus: NetworkStatus,
     isScanning: Boolean,
@@ -85,6 +93,8 @@ fun PrintersScreen(
     isProbingManual: Boolean,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
+    onRefreshUsb: () -> Unit,
+    onUseUsbPrinter: (UsbPrinterInfo) -> Unit,
     onSelectPrinter: (PrinterDevice) -> Unit,
     onSetDefaultPrinter: (PrinterDevice) -> Unit,
     onDeletePrinter: (String) -> Unit,
@@ -94,16 +104,22 @@ fun PrintersScreen(
         port: Int,
         path: String,
         protocol: PrinterProtocol,
+        smbUser: String,
+        smbPass: String,
+        smbDomain: String,
         onRequirePin: (host: String, port: Int, useHttps: Boolean) -> Unit,
+        onRequireSmbAuth: (host: String) -> Unit,
         onComplete: () -> Unit
     ) -> Unit,
     onPairCompanion: (host: String, port: Int, useHttps: Boolean, pin: String, onPaired: () -> Unit) -> Unit,
+    onScanSmbHost: (host: String, user: String, pass: String, domain: String, onComplete: () -> Unit) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var showManualDialog by remember { mutableStateOf(false) }
     var showCompanionGuide by remember { mutableStateOf(false) }
     var pairingTarget by remember { mutableStateOf<Triple<String, Int, Boolean>?>(null) }
+    var smbAuthHost by remember { mutableStateOf<String?>(null) }
 
     val discoveryPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.NEARBY_WIFI_DEVICES
@@ -224,6 +240,98 @@ fun PrintersScreen(
             }
         }
 
+        // USB OTG Connected Printers Section
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Usb,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Printer USB OTG Langsung",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (connectedUsbPrinters.isEmpty()) {
+                                        "Colokkan printer lewat adaptor USB OTG lalu ketuk Refresh"
+                                    } else {
+                                        "${connectedUsbPrinters.size} printer USB terdeteksi"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = onRefreshUsb,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("btn_refresh_usb")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh USB OTG")
+                        }
+                    }
+
+                    connectedUsbPrinters.forEach { usbInfo ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = usbInfo.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = buildString {
+                                            append("VID:${usbInfo.device.vendorId} PID:${usbInfo.device.productId}")
+                                            if (usbInfo.commandSets.isNotEmpty()) {
+                                                append(" • ${usbInfo.commandSets.take(3).joinToString(",")}")
+                                            }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFontFamily),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = { onUseUsbPrinter(usbInfo) },
+                                    modifier = Modifier.minimumInteractiveComponentSize()
+                                ) {
+                                    Text(if (usbInfo.hasPermission) "Gunakan" else "Izinkan USB")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Discovered Printers Section
         if (discoveredPrinters.isNotEmpty()) {
             item {
@@ -238,14 +346,18 @@ fun PrintersScreen(
                     isSelected = selectedPrinter?.id == printer.id,
                     isSavedSection = false,
                     onClick = {
-                        if (printer.id.startsWith("companion_pair_")) {
-                            pairingTarget = Triple(
-                                printer.host,
-                                printer.port,
-                                printer.protocol == PrinterProtocol.COMPANION_HTTPS
-                            )
-                        } else {
-                            onSelectPrinter(printer)
+                        when {
+                            printer.id.startsWith("companion_pair_") -> {
+                                pairingTarget = Triple(
+                                    printer.host,
+                                    printer.port,
+                                    printer.protocol == PrinterProtocol.COMPANION_HTTPS
+                                )
+                            }
+                            printer.id.startsWith("smb_auth_") -> {
+                                smbAuthHost = printer.host
+                            }
+                            else -> onSelectPrinter(printer)
                         }
                     },
                     onSetDefault = null,
@@ -288,7 +400,7 @@ fun PrintersScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Tekan Scan Jaringan untuk mencari mesin fotokopi (IPP/RAW 9100) dan laptop Companion Server, atau Tambah IP secara manual.",
+                            text = "Tekan Scan Jaringan untuk mencari printer IPP/RAW/LPR, Printer Sharing Windows (SMB), laptop Companion Server, atau colokkan printer lewat kabel USB OTG.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -313,19 +425,39 @@ fun PrintersScreen(
         ManualPrinterDialog(
             isProbing = isProbingManual,
             onDismiss = { showManualDialog = false },
-            onConfirm = { name, host, port, path, protocol ->
+            onConfirm = { name, host, port, path, protocol, smbUser, smbPass, smbDomain ->
                 onAddManualPrinter(
                     name,
                     host,
                     port,
                     path,
                     protocol,
+                    smbUser,
+                    smbPass,
+                    smbDomain,
                     { h, p, https ->
                         showManualDialog = false
                         pairingTarget = Triple(h, p, https)
                     },
+                    { h ->
+                        showManualDialog = false
+                        smbAuthHost = h
+                    },
                     { showManualDialog = false }
                 )
+            }
+        )
+    }
+
+    smbAuthHost?.let { host ->
+        SmbAuthDialog(
+            host = host,
+            isScanning = isProbingManual,
+            onDismiss = { smbAuthHost = null },
+            onSubmit = { user, pass, domain ->
+                onScanSmbHost(host, user, pass, domain) {
+                    smbAuthHost = null
+                }
             }
         )
     }
@@ -378,7 +510,11 @@ private fun PrinterListCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = if (printer.protocol.isViaLaptop) Icons.Default.Computer else Icons.Default.Print,
+                imageVector = when {
+                    printer.protocol == PrinterProtocol.USB_OTG -> Icons.Default.Usb
+                    printer.protocol.isViaLaptop || printer.protocol == PrinterProtocol.SMB_WINDOWS -> Icons.Default.Computer
+                    else -> Icons.Default.Print
+                },
                 contentDescription = null,
                 tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(30.dp)
@@ -474,17 +610,30 @@ private fun PrinterListCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ManualPrinterDialog(
     isProbing: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (name: String, host: String, port: Int, path: String, protocol: PrinterProtocol) -> Unit
+    onConfirm: (
+        name: String,
+        host: String,
+        port: Int,
+        path: String,
+        protocol: PrinterProtocol,
+        smbUser: String,
+        smbPass: String,
+        smbDomain: String
+    ) -> Unit
 ) {
     var selectedProtocol by remember { mutableStateOf(PrinterProtocol.IPP) }
     var name by remember { mutableStateOf("") }
     var host by remember { mutableStateOf("192.168.1.") }
     var portText by remember { mutableStateOf("631") }
     var path by remember { mutableStateOf("/ipp/print") }
+    var smbUser by remember { mutableStateOf("") }
+    var smbPass by remember { mutableStateOf("") }
+    var smbDomain by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -495,14 +644,16 @@ private fun ManualPrinterDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text("Protokol", style = MaterialTheme.typography.labelMedium)
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     listOf(
                         PrinterProtocol.IPP,
                         PrinterProtocol.RAW_9100,
                         PrinterProtocol.LPR_515,
+                        PrinterProtocol.SMB_WINDOWS,
                         PrinterProtocol.COMPANION_HTTP
                     ).forEach { proto ->
                         FilterChip(
@@ -513,10 +664,20 @@ private fun ManualPrinterDialog(
                                 path = when (proto) {
                                     PrinterProtocol.IPP, PrinterProtocol.IPPS -> "/ipp/print"
                                     PrinterProtocol.LPR_515 -> "lp"
+                                    PrinterProtocol.SMB_WINDOWS -> ""
                                     else -> ""
                                 }
                             },
-                            label = { Text(proto.label.substringBefore(" "), maxLines = 1) }
+                            label = {
+                                Text(
+                                    text = when (proto) {
+                                        PrinterProtocol.SMB_WINDOWS -> "SMB Windows"
+                                        PrinterProtocol.COMPANION_HTTP -> "Companion"
+                                        else -> proto.label.substringBefore(" ")
+                                    },
+                                    maxLines = 1
+                                )
+                            }
                         )
                     }
                 }
@@ -524,31 +685,78 @@ private fun ManualPrinterDialog(
                 OutlinedTextField(
                     value = host,
                     onValueChange = { host = it },
-                    label = { Text("Alamat IP / Hostname") },
+                    label = {
+                        Text(
+                            if (selectedProtocol == PrinterProtocol.SMB_WINDOWS) {
+                                "IP / Nama Komputer Windows"
+                            } else {
+                                "Alamat IP / Hostname"
+                            }
+                        )
+                    },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("input_manual_host")
                 )
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { portText = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("Port") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (selectedProtocol == PrinterProtocol.IPP || selectedProtocol == PrinterProtocol.LPR_515) {
+
+                if (selectedProtocol != PrinterProtocol.SMB_WINDOWS) {
+                    OutlinedTextField(
+                        value = portText,
+                        onValueChange = { portText = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Port") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                if (selectedProtocol == PrinterProtocol.IPP ||
+                    selectedProtocol == PrinterProtocol.LPR_515 ||
+                    selectedProtocol == PrinterProtocol.SMB_WINDOWS
+                ) {
                     OutlinedTextField(
                         value = path,
                         onValueChange = { path = it },
                         label = {
-                            Text(if (selectedProtocol == PrinterProtocol.LPR_515) "Nama Antrian (lp)" else "Path IPP (/ipp/print)")
+                            Text(
+                                when (selectedProtocol) {
+                                    PrinterProtocol.LPR_515 -> "Nama Antrian (lp)"
+                                    PrinterProtocol.SMB_WINDOWS -> "Nama Share Printer (kosongkan = cari otomatis)"
+                                    else -> "Path IPP (/ipp/print)"
+                                }
+                            )
                         },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+
+                if (selectedProtocol == PrinterProtocol.SMB_WINDOWS) {
+                    OutlinedTextField(
+                        value = smbUser,
+                        onValueChange = { smbUser = it },
+                        label = { Text("Username Windows (opsional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = smbPass,
+                        onValueChange = { smbPass = it },
+                        label = { Text("Password Windows (opsional)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = smbDomain,
+                        onValueChange = { smbDomain = it },
+                        label = { Text("Workgroup / Domain (opsional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -563,7 +771,7 @@ private fun ManualPrinterDialog(
                 enabled = !isProbing && host.isNotBlank(),
                 onClick = {
                     val port = portText.toIntOrNull() ?: selectedProtocol.defaultPort
-                    onConfirm(name, host, port, path, selectedProtocol)
+                    onConfirm(name, host, port, path, selectedProtocol, smbUser, smbPass, smbDomain)
                 },
                 modifier = Modifier.testTag("btn_confirm_manual_printer")
             ) {
@@ -571,7 +779,65 @@ private fun ManualPrinterDialog(
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(modifier = Modifier.width(6.dp))
                 }
-                Text("Hubungkan & Simpan")
+                Text(if (selectedProtocol == PrinterProtocol.SMB_WINDOWS && path.isBlank()) "Cari Share SMB" else "Hubungkan & Simpan")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Batal") }
+        }
+    )
+}
+
+@Composable
+private fun SmbAuthDialog(
+    host: String,
+    isScanning: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (user: String, pass: String, domain: String) -> Unit
+) {
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var domain by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Login Printer Windows (SMB)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "PC Windows $host meminta kredensial login untuk membaca daftar printer yang di-share.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    label = { Text("Username Windows") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = pass,
+                    onValueChange = { pass = it },
+                    label = { Text("Password Windows") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = domain,
+                    onValueChange = { domain = it },
+                    label = { Text("Workgroup / Domain (opsional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !isScanning && user.isNotBlank(),
+                onClick = { onSubmit(user, pass, domain) }
+            ) {
+                Text("Cari Printer Share")
             }
         },
         dismissButton = {

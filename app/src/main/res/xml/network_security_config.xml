@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Local LAN printers and Companion Servers commonly operate over HTTP on RFC1918 subnets.
+         HTTPS with self-signed certificate verification/pinning is also supported in CompanionClient. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

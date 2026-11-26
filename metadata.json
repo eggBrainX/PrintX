@@ -1,0 +1,6 @@
+{
+  "name": "LAN Print",
+  "description": "Cetak PDF, foto, halaman web, kontak, dan agenda kalender lewat Wi-Fi ke mesin fotokopi (IPP/RAW 9100/LPR) dan printer USB melalui Companion Server di laptop.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

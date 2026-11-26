@@ -146,4 +146,15 @@ class LanPrintCoreTest {
         )
         assertEquals("USB OTG (/dev/bus/usb/001/002)", usbPrinter.endpointLabel)
     }
+
+    @Test
+    fun smbClientContextConfiguresSmb2WithoutIpcSigningEnforcement() {
+        val client = com.example.network.SmbPrinterClient()
+        val ctx = client.buildContext(username = "PC\\AAA", password = "secret", useSmb2Only = true)
+        assertEquals("SMB202", ctx.config.minimumVersion.name)
+        assertEquals("SMB311", ctx.config.maximumVersion.name)
+        assertEquals(false, ctx.config.isIpcSigningEnforced)
+        val built = client.buildSmbPrinterDevice("192.168.1.3", "CanonG2010", "AAA", "secret", null)
+        assertEquals("smb://192.168.1.3/CanonG2010", built.endpointLabel)
+    }
 }

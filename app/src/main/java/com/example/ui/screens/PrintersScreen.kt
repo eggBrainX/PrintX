@@ -112,7 +112,15 @@ fun PrintersScreen(
         onComplete: () -> Unit
     ) -> Unit,
     onPairCompanion: (host: String, port: Int, useHttps: Boolean, pin: String, onPaired: () -> Unit) -> Unit,
-    onScanSmbHost: (host: String, user: String, pass: String, domain: String, onComplete: () -> Unit) -> Unit,
+    onScanSmbHost: (
+        host: String,
+        user: String,
+        pass: String,
+        domain: String,
+        directShare: String,
+        onError: (String) -> Unit,
+        onComplete: () -> Unit
+    ) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -120,6 +128,7 @@ fun PrintersScreen(
     var showCompanionGuide by remember { mutableStateOf(false) }
     var pairingTarget by remember { mutableStateOf<Triple<String, Int, Boolean>?>(null) }
     var smbAuthHost by remember { mutableStateOf<String?>(null) }
+    var smbAuthError by remember { mutableStateOf<String?>(null) }
 
     val discoveryPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.NEARBY_WIFI_DEVICES
@@ -355,6 +364,7 @@ fun PrintersScreen(
                                 )
                             }
                             printer.id.startsWith("smb_auth_") -> {
+                                smbAuthError = null
                                 smbAuthHost = printer.host
                             }
                             else -> onSelectPrinter(printer)
@@ -441,6 +451,7 @@ fun PrintersScreen(
                     },
                     { h ->
                         showManualDialog = false
+                        smbAuthError = null
                         smbAuthHost = h
                     },
                     { showManualDialog = false }
@@ -453,10 +464,18 @@ fun PrintersScreen(
         SmbAuthDialog(
             host = host,
             isScanning = isProbingManual,
-            onDismiss = { smbAuthHost = null },
-            onSubmit = { user, pass, domain ->
-                onScanSmbHost(host, user, pass, domain) {
+            errorMessage = smbAuthError,
+            onDismiss = {
+                smbAuthHost = null
+                smbAuthError = null
+            },
+            onSubmit = { user, pass, domain, directShare ->
+                smbAuthError = null
+                onScanSmbHost(host, user, pass, domain, directShare, { err ->
+                    smbAuthError = err
+                }) {
                     smbAuthHost = null
+                    smbAuthError = null
                 }
             }
         )
@@ -792,26 +811,45 @@ private fun ManualPrinterDialog(
 private fun SmbAuthDialog(
     host: String,
     isScanning: Boolean,
+    errorMessage: String?,
     onDismiss: () -> Unit,
-    onSubmit: (user: String, pass: String, domain: String) -> Unit
+    onSubmit: (user: String, pass: String, domain: String, directShare: String) -> Unit
 ) {
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var domain by remember { mutableStateOf("") }
+    var directShare by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Login Printer Windows (SMB)") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(
-                    "PC Windows $host meminta kredensial login untuk membaca daftar printer yang di-share.",
+                    "PC Windows $host meminta kredensial login. Gunakan username & password akun Windows (bukan PIN 4-6 digit).",
                     style = MaterialTheme.typography.bodySmall
                 )
+                if (!errorMessage.isNullOrBlank()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = user,
                     onValueChange = { user = it },
-                    label = { Text("Username Windows") },
+                    label = { Text("Username Windows (atau email akun MS)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -826,7 +864,14 @@ private fun SmbAuthDialog(
                 OutlinedTextField(
                     value = domain,
                     onValueChange = { domain = it },
-                    label = { Text("Workgroup / Domain (opsional)") },
+                    label = { Text("Nama PC / Workgroup (opsional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = directShare,
+                    onValueChange = { directShare = it },
+                    label = { Text("Nama Share Printer langsung (opsional, mis. CanonG2010)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -834,10 +879,14 @@ private fun SmbAuthDialog(
         },
         confirmButton = {
             Button(
-                enabled = !isScanning && user.isNotBlank(),
-                onClick = { onSubmit(user, pass, domain) }
+                enabled = !isScanning && (user.isNotBlank() || directShare.isNotBlank()),
+                onClick = { onSubmit(user, pass, domain, directShare) }
             ) {
-                Text("Cari Printer Share")
+                if (isScanning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(if (directShare.isNotBlank()) "Hubungkan Langsung" else "Cari Printer Share")
             }
         },
         dismissButton = {

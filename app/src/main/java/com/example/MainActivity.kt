@@ -337,8 +337,8 @@ private fun LanPrintAppShell(viewModel: LanPrintViewModel) {
                                 onPairCompanion = { host, port, https, pin, onPaired ->
                                     viewModel.pairWithCompanion(host, port, https, pin, onPaired)
                                 },
-                                onScanSmbHost = { host, user, pass, domain, onDone ->
-                                    viewModel.discoverSmbPrintersOnHost(host, user, pass, domain, onDone)
+                                onScanSmbHost = { host, user, pass, domain, directShare, onErr, onDone ->
+                                    viewModel.discoverSmbPrintersOnHost(host, user, pass, domain, directShare, onErr, onDone)
                                 }
                             )
                         }

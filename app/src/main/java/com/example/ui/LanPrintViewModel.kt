@@ -270,15 +270,47 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
         username: String,
         password: String,
         domain: String,
+        directShareName: String = "",
+        onError: (String) -> Unit = {},
         onComplete: () -> Unit
     ) {
         viewModelScope.launch {
             _isProbingManual.value = true
             try {
-                val res = smbClient.discoverPrintersOnHost(host, username, password, domain)
+                val cleanShare = directShareName.trim().trimStart('/')
+                if (cleanShare.isNotBlank()) {
+                    val device = smbClient.buildSmbPrinterDevice(
+                        host = host,
+                        shareName = cleanShare,
+                        username = username.ifBlank { null },
+                        password = password.ifBlank { null },
+                        domain = domain.ifBlank { null }
+                    ).copy(isSaved = true)
+                    val online = smbClient.checkShareOnline(device)
+                    val finalDevice = device.copy(
+                        isOnline = online,
+                        capabilities = device.capabilities.copy(
+                            printerStateMessage = if (online) "Share Windows Online" else "Disimpan (Siap dicoba cetak)"
+                        )
+                    )
+                    repo.savePrinter(finalDevice)
+                    selectPrinter(finalDevice)
+                    _snackbarMessage.tryEmit("Printer Windows ${finalDevice.name} disimpan")
+                    onComplete()
+                    return@launch
+                }
+
+                val res = smbClient.discoverPrintersOnHost(
+                    host,
+                    username.ifBlank { null },
+                    password.ifBlank { null },
+                    domain.ifBlank { null }
+                )
                 res.onSuccess { list ->
                     if (list.isEmpty()) {
-                        _snackbarMessage.tryEmit("Terhubung ke $host, tapi tidak ada Printer Share yang dibagikan")
+                        val msg = "Terhubung ke $host, tapi tidak ada Printer Share ditemukan. Isi Nama Share Printer secara manual."
+                        onError(msg)
+                        _snackbarMessage.tryEmit(msg)
                     } else {
                         list.forEach { repo.savePrinter(it.copy(isSaved = true)) }
                         selectPrinter(list.first().copy(isSaved = true))
@@ -286,7 +318,9 @@ class LanPrintViewModel(application: Application) : AndroidViewModel(application
                         onComplete()
                     }
                 }.onFailure { err ->
-                    _snackbarMessage.tryEmit("Gagal scan SMB $host: ${err.localizedMessage}")
+                    val msg = err.localizedMessage ?: "Gagal terhubung ke SMB $host"
+                    onError(msg)
+                    _snackbarMessage.tryEmit(msg)
                 }
             } finally {
                 _isProbingManual.value = false
